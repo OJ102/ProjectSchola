@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash",
+            "args": ["-c", "echo '[PreToolUse] Tool: AskUserQuestion' >> /tmp/hook-spike.log && cat >> /tmp/hook-spike.log"],
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash",
+            "args": ["-c", "echo '[PostToolUse] Tool: AskUserQuestion' >> /tmp/hook-spike.log && cat >> /tmp/hook-spike.log"],
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
