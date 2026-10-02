@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "quiz-spike": {
+      "command": "node",
+      "args": ["quiz-mcp-spike.js"]
+    }
+  }
+}
