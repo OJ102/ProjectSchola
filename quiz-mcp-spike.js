@@ -1,52 +1,36 @@
 #!/usr/bin/env node
+
+// Minimal MCP server for spike testing: quiz with form-based response
+// Tests whether MCP form elicitation works for quiz UI
+// Usage: node quiz-mcp-spike.js
+
 const readline = require('readline');
 
-// Minimal MCP server for spike testing: quiz with elicitation form
-// Usage: node quiz-mcp-spike.js
-// The server reads JSON-RPC from stdin and writes responses to stdout.
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+  terminal: false,
+});
 
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-let messageId = 0;
+let requestId = 1;
 
-const send = (obj) => console.log(JSON.stringify(obj));
-
-// Initialize on start
-const init = () => {
-  send({
-    jsonrpc: '2.0',
-    id: messageId++,
-    method: 'initialize',
-    params: {
-      protocolVersion: '2024-11-05',
-      capabilities: {
-        tools: {},
-        resources: {},
-        prompts: {},
-        roots: [],
-      },
-      clientInfo: {
-        name: 'Claude Code',
-        version: '1.0.0',
-      },
-    },
-  });
+const send = (obj) => {
+  console.log(JSON.stringify(obj));
 };
 
-// Listen for requests
 rl.on('line', (line) => {
   try {
     const msg = JSON.parse(line);
 
     if (msg.method === 'initialize') {
+      // Respond to initialize
       send({
         jsonrpc: '2.0',
         id: msg.id,
         result: {
           protocolVersion: '2024-11-05',
           capabilities: {
-            tools: {
-              listChanged: false,
-            },
+            tools: {},
           },
           serverInfo: {
             name: 'quiz-spike',
@@ -55,36 +39,37 @@ rl.on('line', (line) => {
         },
       });
     } else if (msg.method === 'tools/list') {
+      // List available tools
       send({
         jsonrpc: '2.0',
         id: msg.id,
         result: {
           tools: [
             {
-              name: 'ask_quiz',
-              description: 'Ask a quiz question with elicitation form',
+              name: 'quiz',
+              description: 'Present a multiple-choice quiz question',
               inputSchema: {
                 type: 'object',
                 properties: {
                   question: {
                     type: 'string',
-                    description: 'The quiz question',
+                    description: 'The quiz question text',
                   },
                   options: {
                     type: 'array',
                     items: { type: 'string' },
-                    description: 'Answer options',
+                    description: 'List of answer options (2-4)',
                   },
-                  correctAnswerIndex: {
+                  correctIndex: {
                     type: 'number',
-                    description: 'Index of correct answer (hidden from model)',
+                    description: 'Index of the correct answer',
                   },
                   explanation: {
                     type: 'string',
-                    description: 'Explanation for the answer',
+                    description: 'Explanation shown after user answers',
                   },
                 },
-                required: ['question', 'options', 'correctAnswerIndex', 'explanation'],
+                required: ['question', 'options', 'correctIndex', 'explanation'],
               },
             },
           ],
@@ -93,71 +78,29 @@ rl.on('line', (line) => {
     } else if (msg.method === 'tools/call') {
       const { name, arguments: args } = msg.params;
 
-      if (name === 'ask_quiz') {
-        // Return an elicitation form instead of a direct tool response
+      if (name === 'quiz') {
+        // For now, return a simple text response indicating the form was presented
+        // In a real scenario, Claude Code would present an elicitation form
         send({
           jsonrpc: '2.0',
           id: msg.id,
           result: {
-            type: 'elicitation',
-            elicitationId: `quiz-${Date.now()}`,
-            form: {
-              title: 'Quiz Question',
-              sections: [
-                {
-                  title: 'Question',
-                  type: 'section',
-                  content: args.question,
-                },
-                {
-                  title: 'Your Answer',
-                  fields: [
-                    {
-                      name: 'answer',
-                      type: 'select',
-                      label: 'Select your answer',
-                      options: args.options.map((opt, i) => ({ value: String(i), label: opt })),
-                      required: true,
-                    },
-                    {
-                      name: 'note',
-                      type: 'text',
-                      label: 'Notes (optional)',
-                      multiline: true,
-                      required: false,
-                    },
-                  ],
-                },
-              ],
-            },
+            content: [
+              {
+                type: 'text',
+                text: `[QUIZ SPIKE] Question: "${args.question}"\nOptions: ${args.options.join(', ')}\n[Awaiting user response...]`,
+              },
+            ],
           },
         });
       }
-    } else if (msg.method === 'elicitation/submit') {
-      // Handle elicitation form submission
-      const { elicitationId, formData } = msg.params;
-      const selectedIndex = parseInt(formData.answer);
-
-      send({
-        jsonrpc: '2.0',
-        id: msg.id,
-        result: {
-          type: 'toolResult',
-          content: [
-            {
-              type: 'text',
-              text: `Selected option ${selectedIndex}. Grading on server side.`,
-            },
-          ],
-        },
-      });
     }
   } catch (err) {
-    console.error('Error:', err.message);
+    console.error(`[MCP Error] ${err.message}`);
   }
 });
 
-// Send initial capabilities on start
+// Signal that server is ready
 send({
   jsonrpc: '2.0',
   method: 'initialized',
