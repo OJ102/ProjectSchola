@@ -25,6 +25,19 @@
           }
         ]
       }
+    ],
+    "MessageEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/md-log-message-hook.sh"],
+            "async": true
+          }
+        ]
+      }
     ]
   }
 }
