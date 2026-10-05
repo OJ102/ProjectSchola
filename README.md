@@ -4,36 +4,55 @@
 
 My AI learning system from this video: [How I Use AI to Learn Things](https://www.youtube.com/watch?v=kzcI5F4tGiU).
 
-This is a personal system I built for myself, shared as-is. Built as a pi configuration: the teaching philosophy encoded in a skill, a few small extensions, and agent definitions.
+This is a personal system I built for myself, shared as-is. Originally built for the Pi coding agent, now **ported to Claude Code** with built-in voice support.
 
 ## What's in it
 
-- `skills/teach/` — the philosophy and the process
+- `skills/teach/` — the teaching philosophy and the probe → plan → teach process
 - `skills/visualize/` — adds a correct, minimal diagram to a lesson when an idea is clearer as a picture
-- `extensions/ask-user-question/` — the agent asks you questions through a UI popup
-- `extensions/quiz/` — graded questions with instant feedback (✓/✗, correct answer, explanation)
-- `extensions/md-log/` — link a markdown file to the session
-- `extensions/visual-tools/` — tools for visualization subagents
-- `agents/` — `researcher`, `svg-maker`, `mermaid-maker`: the subagents the system delegates to
+- `skills/md-log/` — live markdown mirror of the session (questions logged before answers)
+- `agents/` — `researcher` (verifies facts), `svg-maker` and `mermaid-maker` (create diagrams)
+- `hooks/` — capture teaching session into markdown for Obsidian (live mirror)
 
-## Install
+## Install (Claude Code)
 
-This repo **is** a `.pi` directory. From your learning project's root:
+This is a Claude Code plugin. Load it:
 
 ```bash
-git clone https://github.com/amosblomqvist/learn .pi
+claude --plugin-dir /path/to/learn
 ```
 
-Then open pi in that directory. (Or copy the pieces you want into your existing project config.)
+Or install as a plugin:
+
+```bash
+claude plugin add /path/to/learn
+```
+
+Then in a Claude Code session: `/teach Python` (or any topic).
 
 ## Requirements
 
-- [pi](https://github.com/earendil-works/pi)
-- A subagent implementation, so the system can spawn the researcher and the visual makers. Recommended: [pi-interactive-subagents](https://github.com/amosblomqvist/pi-interactive-subagents) (tmux only). With it, everything works out of the box. Any other implementation works too, but expect to adapt the agent definitions, e.g. `agents/researcher.md` lists `safe_bash` in its tools, which is specific to that extension.
-- `ask-user-question` — use the copy bundled here. If your setup already has an `ask-user-question` extension, use **this** one in its place. Popups from different extensions serialize through a shared UI lock, which only works when it's the same implementation.
+- **Claude Code** v2.1.76+ (for hook support)
+- **macOS** (for `say` command in voice mode; requires a recent Claude Code version with voice support)
+- `mmdc` (Mermaid CLI, for diagram rendering):
+  ```bash
+  brew install mermaid-cli
+  ```
+- `rsvg-convert` (for SVG rendering; usually via ImageMagick):
+  ```bash
+  brew install librsvg
+  ```
+
+## Features
+
+- **Probe → plan → teach loop:** interactive session that finds your knowledge edge, plans around it, then teaches
+- **Built-in voice** (Claude Code `/voice`): hold space to speak, listen to the teacher reply
+- **Live markdown log:** session is mirrored to Obsidian-formatted markdown (`md-log` skill)
+- **Diagrams:** system can generate dependency graphs (Mermaid) or geometric visuals (SVG)
+- **Research verification:** researcher agent checks facts when needed
 
 ## Notes
 
-You can run the system without subagents. The main session does the teaching. You just lose the researcher (truth verification) and the generated visuals.
+The teaching skill is written for one learner (me). Edit `skills/teach/SKILL.md` to fit how you learn best.
 
-The teaching skill is written for one learner (me). Edit the skill to fit how you learn best.
+**Pi version:** the original Pi configuration is still in `extensions/` and `.pi/`. This Claude Code port reuses `skills/` and `agents/` but replaces the Pi extensions with Claude Code hooks and built-in tools.
