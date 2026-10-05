@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "bash",
-            "args": ["-c", "echo '[PreToolUse] Tool: AskUserQuestion' >> /tmp/hook-spike.log && cat >> /tmp/hook-spike.log"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/md-log-hook.sh"],
             "async": true
           }
         ]
@@ -20,7 +20,7 @@
           {
             "type": "command",
             "command": "bash",
-            "args": ["-c", "echo '[PostToolUse] Tool: AskUserQuestion' >> /tmp/hook-spike.log && cat >> /tmp/hook-spike.log"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/md-log-hook.sh"],
             "async": true
           }
         ]
