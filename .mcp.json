@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "quiz": {
-      "command": "node",
-      "args": ["quiz-mcp-server.js"]
-    }
-  }
-}
