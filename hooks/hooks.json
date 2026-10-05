@@ -1,40 +1,14 @@
 {
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "AskUserQuestion",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/md-log-hook.sh"],
-            "async": true
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "AskUserQuestion",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/md-log-hook.sh"],
-            "async": true
-          }
-        ]
-      }
-    ],
-    "MessageEnd": [
+    "Stop": [
       {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
             "command": "bash",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/md-log-message-hook.sh"],
-            "async": true
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/md-log-stop-hook.sh"],
+            "async": false
           }
         ]
       }
