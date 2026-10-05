@@ -1,10 +1,16 @@
 #!/bin/bash
-# md-log hook: capture AskUserQuestion calls for live md-log mirror
+# md-log hook: capture AskUserQuestion calls for live md-log mirror to Obsidian vault
 # Receives JSON on stdin from Claude Code hooks
-# Appends to md-log markdown file
+# Appends to markdown file in Obsidian vault
 
-LOG_FILE="${HOME}/.claude/projects/-Users-omjadhav-Documents---Projects---learn/md-log.md"
+# Obsidian vault path (set via env or default)
+VAULT_PATH="${OBSIDIAN_VAULT_PATH:=${HOME}/Obsidian/learn}"
+LOG_FILE="${VAULT_PATH}/session.md"
 STATE_FILE="/tmp/md-log-state.json"
+
+# Ensure vault and log file exist
+mkdir -p "$VAULT_PATH"
+[ ! -f "$LOG_FILE" ] && echo "# Teaching Session\n\n" > "$LOG_FILE"
 
 # Ensure state file exists
 [ ! -f "$STATE_FILE" ] && echo '{}' > "$STATE_FILE"

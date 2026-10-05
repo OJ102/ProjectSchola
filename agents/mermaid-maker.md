@@ -28,7 +28,7 @@ You are not done when the diagram renders. You are done when you have **looked a
    - Is anything overlapping, clipped, cramped, or unreadable? If so the fix is usually **fewer elements**, not more.
    - Would the learner instantly read the intended idea from this picture alone?
 5. **Iterate** with `Write` to edit the source and `Bash` to re-render. A few passes is normal. If `mmdc` returns an error, read it, fix the source, re-render.
-6. **Publish** once it is correct and clean: `Bash` command `mmdc -i diagram.mmd -o viz/viz-<topic>-$(date +%s).png`. Confirm the published image one last time with `Read`.
+6. **Publish** once it is correct and clean: `Bash` command `mmdc -i diagram.mmd -o ${OBSIDIAN_VAULT_PATH:-~/Obsidian/learn}/viz/viz-<topic>-$(date +%s).png`. Confirm the published image one last time with `Read`.
 
 ## Your output
 

@@ -32,7 +32,7 @@ You are done only when you have **looked at the rendered PNG and confirmed it is
    - Is anything clipped by the viewBox, too small to read, or cramped?
    - Would the learner instantly read the intended idea from this picture alone?
 5. **Iterate** with `Write` to edit the source and `Bash` to re-render until correct and clean. If `rsvg-convert` fails, read the error, fix the source, re-render.
-6. **Publish** once it is correct and clean: `Bash` command `rsvg-convert -z 2 diagram.svg -o viz/viz-<topic>-$(date +%s).png`. Confirm the published image one last time with `Read`.
+6. **Publish** once it is correct and clean: `Bash` command `rsvg-convert -z 2 diagram.svg -o ${OBSIDIAN_VAULT_PATH:-~/Obsidian/learn}/viz/viz-<topic>-$(date +%s).png`. Confirm the published image one last time with `Read`.
 
 ## Your output
 

@@ -7,11 +7,21 @@ description: Manage the live markdown log of the teaching session. Use /md-log t
 
 Live mirror of the teaching session to a markdown file. Questions appear before answers. No correct answer is ever leaked into the log.
 
+## Setup
+
+Before using `/md-log`, set your Obsidian vault path:
+
+```bash
+export OBSIDIAN_VAULT_PATH=~/Obsidian/learn
+```
+
+(Default: `~/Obsidian/learn` if not set.)
+
 ## Commands
 
 ### /md-log [filename]
 
-Start (or restart) the markdown log file. If no filename given, uses the default `session.md` in `~/.claude/projects/<project>/`.
+Start (or restart) the markdown log file. Writes to `session.md` in your Obsidian vault.
 
 The log file is created in Obsidian vault format. It captures:
 - User prompts (as blockquotes)
@@ -39,8 +49,14 @@ Log uses Obsidian markdown:
 - Teacher reply: plain prose
 - Question: `> **Q:** question text`
 - Answer: `**A:** user's choice`
-- Diagram embed: `![[viz-name.png|500]]`
+- Diagram embed: `![[viz-name.png|500]]` (diagrams saved to `viz/` folder in vault)
 - LaTeX: inline `$x^2$` and display `$$x^2$$`
+
+## Obsidian vault location
+
+The log is written to `${OBSIDIAN_VAULT_PATH}/session.md`. Diagrams are saved to `${OBSIDIAN_VAULT_PATH}/viz/` automatically.
+
+To open the vault in Obsidian, point it to `~/Obsidian/learn` (or your configured path).
 
 ## Implementation note
 
