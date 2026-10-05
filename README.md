@@ -16,19 +16,31 @@ This is a personal system I built for myself, shared as-is. Originally built for
 
 ## Install (Claude Code)
 
-This is a Claude Code plugin. Load it:
+1. Set Obsidian vault path (one-time):
+   ```bash
+   export OBSIDIAN_VAULT_PATH=~/Obsidian/learn
+   mkdir -p ~/Obsidian/learn/viz
+   ```
+2. Open Obsidian and point it to `~/Obsidian/learn`
+3. Load the plugin:
+   ```bash
+   claude --plugin-dir /path/to/learn
+   ```
+4. In Claude Code session: `/teach Python` (or any topic)
 
-```bash
-claude --plugin-dir /path/to/learn
+**Optional: status line indicator**
+
+Add to `.claude/settings.json` or `.claude/settings.local.json`:
+```json
+{
+  "statusLine": {
+    "command": "bash /path/to/learn/hooks/status-line.sh",
+    "refreshInterval": 2000
+  }
+}
 ```
 
-Or install as a plugin:
-
-```bash
-claude plugin add /path/to/learn
-```
-
-Then in a Claude Code session: `/teach Python` (or any topic).
+Shows 🗒️ indicator when md-log is active.
 
 ## Requirements
 
@@ -41,6 +53,10 @@ Then in a Claude Code session: `/teach Python` (or any topic).
 - `rsvg-convert` (for SVG rendering; usually via ImageMagick):
   ```bash
   brew install librsvg
+  ```
+- `jq` (for JSON parsing in hooks):
+  ```bash
+  brew install jq
   ```
 
 ## Features
