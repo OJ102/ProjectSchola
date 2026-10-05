@@ -139,9 +139,10 @@ If you catch yourself asserting a fact he'd have to take on faith — foundation
 ## Claude Code port notes
 
 - **Option descriptions leak answers.** AskUserQuestion options have descriptions. Never use descriptions that signal correctness ("This is right") or incorrectness ("A misconception"). Only the option label should be visible; descriptions should be empty or neutral if needed at all.
-- **Model-side grading in Phase 1.** Until the server-side quiz service exists, you grade answers from memory. Binary-search the edge carefully and grade each answer explicitly before the next question.
+- **Model-side grading (simplified).** You grade answers directly from your knowledge. The model knows the answer when asking (teacher always does). Binary-search the edge carefully: escalate on all-correct, narrow on a miss. Grade each answer explicitly and show the explanation before the next question.
 - **No "I don't know" slot.** AskUserQuestion has "Other" always available. Reserve one of the 2-4 option slots for "I haven't encountered this yet" or similar.
 - **Free-text questions.** AskUserQuestion has no pure free-text mode. For goal questions (1b) or open-ended responses, ask in plain chat or use AskUserQuestion with an "Other" option that captures the text.
+- **Answers logged cleanly.** The md-log hooks capture questions before answers. No correct answer is leaked into the transcript prematurely — the question appears, user answers, then you grade. Session is mirrored live to Obsidian vault.
 
 ## Formatting — math renders as LaTeX
 
