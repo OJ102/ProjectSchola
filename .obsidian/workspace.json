@@ -11,14 +11,12 @@
             "id": "a81a4161a9162f11",
             "type": "leaf",
             "state": {
-              "type": "markdown",
+              "type": "image",
               "state": {
-                "file": "SPIKE-TEST.md",
-                "mode": "source",
-                "source": false
+                "file": "assets/thumbnail.png"
               },
-              "icon": "lucide-file",
-              "title": "SPIKE-TEST"
+              "icon": "lucide-image",
+              "title": "thumbnail"
             }
           }
         ]
@@ -185,15 +183,21 @@
       "bases:Create new base": false
     }
   },
-  "active": "a81a4161a9162f11",
+  "active": "7d48454cfb80cc14",
   "lastOpenFiles": [
+    "agents/svg-maker.md",
+    "agents/researcher.md",
+    "agents/mermaid-maker.md",
+    "hooks/status-line.sh",
+    "quiz-mcp-server.js",
+    "skills/md-log/SKILL.md",
+    "skills/md-log",
+    "hooks/md-log-hook.sh",
+    "SPIKE-TEST.md",
     "skills/spike-test/SKILL.md",
     "skills/spike-test",
     "hooks/hooks.json",
     "README.md",
-    "assets/thumbnail.png",
-    "agents/svg-maker.md",
-    "agents/researcher.md",
-    "agents/mermaid-maker.md"
+    "assets/thumbnail.png"
   ]
 }
