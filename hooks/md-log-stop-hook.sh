@@ -23,26 +23,15 @@ fi
   echo "# Teaching Session"
   echo ""
 
-  # Read transcript JSONL and extract messages
+  # Extract text content from assistant messages
   jq -r '
-    [.[] | select(.type == "message")] |
-    .[] |
-    if .role == "user" then
-      "> **User:** \(.content)"
-    elif .role == "assistant" then
-      "> **Teacher:** \(.content)"
-    else
-      empty
-    end
-  ' "$TRANSCRIPT_PATH" 2>/dev/null
-
-  # Also extract AskUserQuestion Q&A
-  jq -r '
-    [.[] | select(.type == "tool_result")] |
-    .[] |
-    select(.tool_name == "AskUserQuestion") |
-    "**Q:** \(.tool_input.questions[0].question // "Question")\n**A:** \(.tool_response.answers[.tool_input.questions[0].question] // "Answer pending")"
-  ' "$TRANSCRIPT_PATH" 2>/dev/null
+    select(.type == "assistant") |
+    .message.content[] |
+    select(.type == "text") |
+    .text
+  ' "$TRANSCRIPT_PATH" 2>/dev/null |
+  # Clean up and format
+  sed 's/^$/\n/g'
 
 } > "$LOG_FILE"
 
