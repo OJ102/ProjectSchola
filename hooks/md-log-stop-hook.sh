@@ -19,28 +19,30 @@ LOG_FILE=$(ls "$SESSIONS_DIR"/*-"$SID".md 2>/dev/null | head -1)
 # Quote every line of a multi-line string so it stays inside an Obsidian callout.
 JQ_PROGRAM='
 def quoted: gsub("\n"; "\n> ");
-select((.isSidechain // false) | not)
-| if .type == "assistant" then
+def is_question_result: (.toolUseResult | type) == "object" and ((.toolUseResult.questions | type) == "array");
+def entry:
+  if .type == "assistant" then
     .message.content[]? | select(.type == "text") | .text
   elif .type == "user" then
-    if (.toolUseResult | type) == "object" and .toolUseResult.questions != null then
+    if is_question_result then
       .toolUseResult as $r
       | $r.questions[]
       | "> [!question] " + (.question | quoted) + "\n"
         + ([.options[]? | "> - " + (.label | quoted)] | join("\n"))
-        + "\n\n**Your answer:** " + ($r.answers[.question] // "_no answer_")
+        + "\n\n**Your answer:** " + (($r.answers // {})[.question] // "_no answer_")
     elif (.message.content | type) == "string" and (.isMeta != true) then
       .message.content as $c
       | if ($c | test("<command-name>")) then
-          ($c | capture("<command-name>(?<n>[^<]*)</command-name>").n) as $name
-          | ($c | capture("<command-args>(?<a>[\\s\\S]*?)</command-args>")? .a // "") as $args
+          (($c | capture("<command-name>(?<n>[^<]*)</command-name>").n) // "") as $name
+          | (($c | capture("<command-args>(?<a>[\\s\\S]*?)</command-args>").a) // "") as $args
           | "> [!note] You\n> " + $name + " " + ($args | quoted)
         elif ($c | test("^\\s*<")) then empty
         else "> [!note] You\n> " + ($c | quoted)
         end
     else empty end
-  else empty end
-| . + "\n"
+  else empty end;
+select((.isSidechain // false) | not)
+| try (entry | . + "\n") catch empty
 '
 
 TMP="${LOG_FILE}.tmp"
