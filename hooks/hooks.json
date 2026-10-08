@@ -1,15 +1,24 @@
 {
   "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          { "type": "command", "command": "bash", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/md-log-stop-hook.sh"], "async": true }
+        ]
+      }
+    ],
     "Stop": [
       {
-        "matcher": "*",
         "hooks": [
-          {
-            "type": "command",
-            "command": "bash",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/md-log-stop-hook.sh"],
-            "async": false
-          }
+          { "type": "command", "command": "bash", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/md-log-stop-hook.sh"] }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/md-log-stop-hook.sh"] }
         ]
       }
     ]
