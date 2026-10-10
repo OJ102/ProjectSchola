@@ -1,74 +1,68 @@
-# learn
+# Project Schola
 
-[![video](assets/thumbnail.png)](https://www.youtube.com/watch?v=kzcI5F4tGiU)
+**Project Schola** is an advanced, AI-driven personal learning ecosystem that adapts to your knowledge level in real-time. Built to transform how we learn complex topics, it uses autonomous agents to probe your understanding, build a customized curriculum, and teach interactively.
 
-My AI learning system from this video: [How I Use AI to Learn Things](https://www.youtube.com/watch?v=kzcI5F4tGiU).
+> **Developed by:** [Om Jadhav](https://github.com/OJ102)
 
-This is a personal system I built for myself, shared as-is. Originally built for the Pi coding agent, now **ported to Claude Code** with built-in voice support.
+## 🚀 Why Project Schola?
 
-## What's in it
+In a world overflowing with static tutorials, Project Schola stands out by offering a **dynamic, conversational learning experience**. As a developer passionate about AI and education tech, I built this system to showcase how Large Language Models can be orchestrated to act as personalized tutors.
 
-- `skills/teach/` — the teaching philosophy and the probe → plan → teach process
-- `skills/visualize/` — adds a correct, minimal diagram to a lesson when an idea is clearer as a picture
-- `skills/md-log/` — live markdown mirror of the session (questions logged before answers)
-- `agents/` — `researcher` (verifies facts), `svg-maker` and `mermaid-maker` (create diagrams)
-- `hooks/` — capture teaching session into markdown for Obsidian (live mirror)
+### Key Innovations:
+- **Adaptive Teaching Loop (Probe → Plan → Teach):** The system doesn't just lecture; it assesses your current knowledge edge first, creates a targeted learning plan, and then delivers bite-sized interactive lessons.
+- **Multi-Agent Architecture:** Utilizes specialized sub-agents:
+  - `researcher`: Fact-checks and gathers up-to-date information.
+  - `svg-maker` & `mermaid-maker`: Dynamically generate visual aids and diagrams when concepts are better explained visually.
+- **Live Markdown Sync:** Automatically captures the entire learning session into a well-formatted Obsidian markdown vault.
+- **Voice Integration:** Built-in voice support for a seamless, hands-free conversational learning experience.
 
-## Install (Claude Code)
+---
 
-1. Set Obsidian vault path (one-time):
+## 🛠️ Tech Stack & Architecture
+
+- **Core Engine:** AI Agentic Workflows
+- **Visuals Rendering:** Mermaid CLI (`mmdc`), SVG (`rsvg-convert`)
+- **Note Management:** Live Obsidian integration via custom shell hooks and `jq`
+
+## 📦 Installation & Setup
+
+1. **Set your Obsidian vault path (one-time):**
    ```bash
    export OBSIDIAN_VAULT_PATH=~/Obsidian/learn
    mkdir -p ~/Obsidian/learn/viz
    ```
 2. Open Obsidian and point it to `~/Obsidian/learn`
-3. Load the plugin:
+3. **Load the plugin:**
    ```bash
-   claude --plugin-dir /path/to/learn
+   claude --plugin-dir /path/to/ProjectSchola
    ```
-4. In Claude Code session: `/teach Python` (or any topic)
+4. **Start Learning:**
+   In your session, simply type: `/teach Python` (or any topic of your choice)
 
-**Optional: status line indicator**
-
-Add to `.claude/settings.json` or `.claude/settings.local.json`:
+### Optional: Status Line Indicator
+Add the following to your settings to show a 🗒️ indicator when the markdown logger is active:
 ```json
 {
   "statusLine": {
-    "command": "bash /path/to/learn/hooks/status-line.sh",
+    "command": "bash /path/to/ProjectSchola/hooks/status-line.sh",
     "refreshInterval": 2000
   }
 }
 ```
 
-Shows 🗒️ indicator when md-log is active.
+## ⚙️ System Requirements
 
-## Requirements
-
-- **Claude Code** v2.1.76+ (for hook support)
-- **macOS** (for `say` command in voice mode; requires a recent Claude Code version with voice support)
-- `mmdc` (Mermaid CLI, for diagram rendering):
+- **macOS** (for the `say` command in voice mode)
+- **Dependencies:**
   ```bash
-  brew install mermaid-cli
-  ```
-- `rsvg-convert` (for SVG rendering; usually via ImageMagick):
-  ```bash
-  brew install librsvg
-  ```
-- `jq` (for JSON parsing in hooks):
-  ```bash
-  brew install jq
+  brew install mermaid-cli librsvg jq
   ```
 
-## Features
+## 🧠 The Philosophy
 
-- **Probe → plan → teach loop:** interactive session that finds your knowledge edge, plans around it, then teaches
-- **Built-in voice** (Claude Code `/voice`): hold space to speak, listen to the teacher reply
-- **Live markdown log:** session is mirrored to Obsidian-formatted markdown (`md-log` skill)
-- **Diagrams:** system can generate dependency graphs (Mermaid) or geometric visuals (SVG)
-- **Research verification:** researcher agent checks facts when needed
+This project is a testament to the power of **Agentic AI** in education. By breaking down the teaching process into modular skills (`skills/teach/`, `skills/visualize/`, `skills/md-log/`), the system remains extensible and highly customizable. 
 
-## Notes
+Feel free to explore the code, test the teaching loop, and see how AI can be engineered to build intelligent, state-aware applications.
 
-The teaching skill is written for one learner (me). Edit `skills/teach/SKILL.md` to fit how you learn best.
-
-**Pi version:** the original Pi configuration is still in `extensions/` and `.pi/`. This Claude Code port reuses `skills/` and `agents/` but replaces the Pi extensions with Claude Code hooks and built-in tools.
+---
+*If you're interested in discussing AI, agentic workflows, or EdTech, feel free to connect!*
