@@ -65,4 +65,10 @@ This project is a testament to the power of **Agentic AI** in education. By brea
 Feel free to explore the code, test the teaching loop, and see how AI can be engineered to build intelligent, state-aware applications.
 
 ---
+
+## 🤝 Credits
+
+This project was originally inspired by and adapted from the AI learning system created by [Amos Blomqvist](https://github.com/amosblomqvist) and featured in the video [How I Use AI to Learn Things](https://www.youtube.com/watch?v=kzcI5F4tGiU). 
+
+---
 *If you're interested in discussing AI, agentic workflows, or EdTech, feel free to connect!*
