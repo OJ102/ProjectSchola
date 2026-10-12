@@ -16,12 +16,7 @@ fi
 
 if speak_enabled; then
   BADGE="🔈 speech on"
-  if [ -f "$SPEAK_PID_FILE" ]; then
-    read -r PID START < "$SPEAK_PID_FILE" 2>/dev/null
-    case "$PID" in ''|*[!0-9]*) ;; *)
-      [ -n "$START" ] && [ "$(speak_pid_start "$PID")" = "$START" ] && BADGE="🔊 speaking" ;;
-    esac
-  fi
+  speak_live_pid >/dev/null && BADGE="🔊 speaking"
   PARTS+=("$BADGE")
 fi
 

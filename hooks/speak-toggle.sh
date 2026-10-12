@@ -9,7 +9,9 @@ case "${1:-status}" in
       || echo "warning: speech command '${SPEAK_CMD:-say}' not found (macOS 'say' is required)" >&2
     echo "speech on" ;;
   off)
-    rm -f "$SPEAK_FLAG"; speak_stop; echo "speech off" ;;
+    rm -f "$SPEAK_FLAG"
+    { speak_lock && { speak_bump_seq; speak_stop; speak_unlock; }; } >/dev/null 2>&1
+    echo "speech off" ;;
   status)
     speak_enabled && echo "speech on" || echo "speech off" ;;
   *) echo "usage: speak-toggle.sh on|off|status" >&2; exit 2 ;;
