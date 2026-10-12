@@ -51,3 +51,75 @@ python3 spikes/locators_other.py vtt tests/fixtures/lecture.vtt spikes/out/vtt "
 - Math loses superscripts in the text layer (`E = mc (2.1)`); math pages need vision (0a).
 - The roman/arabic boundary rule assumes body numbering starts at 1; per-chapter numbering ("3-14") is not handled yet.
 - VTT rolling auto-captions are deduped only on exact repeats; real YouTube auto-subs need prefix-overlap merging.
+
+### 0b revision after the design review (decisions 3, 4, 5, 10)
+- `pdfmini.py` fails closed (decision 10). It caps the input at 512 MB, objects at 2M, nesting/tree depth at 100, pages at 100k, inflated streams at 64 MB and wall time at 30 s. EOF inside an array, dict or string raises `PDFError`. `/Root` is read only from a real `trailer` dict or `/XRef` stream. Label ranges keep their page offsets (`None` before the first range). `/St` that is ≤0 or >100000 leaves its pages unlabeled. `locators.py` catches `PDFError` and continues with the footer fit and no outline. All 10 adversary pdfmini cases now return in under 0.1 s with a clean result or a clean error.
+- `pagelabels.py` (new), decisions 4 and 5:
+  - **Candidates:** taken only from the outer 3 visual lines (bottom side first), in anchored shapes: bare, `N | head`, `head | N` (with `|`, `•`, `·` or em dash; Computer Modern renders `|` as an em dash), `Page N`, or `N head` where head repeats on ≥30% of pages in a ±15 page window. The outermost matching line wins. Every label on that line is a candidate, so `50 | head … head | 51` lets the fit choose.
+  - **Labels:** strings in arabic, roman (≤400, valid, needs a neighbour) or chapter-prefixed (`3-14`, `A-1`) schemes.
+  - **Fit:** runs of (scheme, offset). A sandwiched outlier is corrected and flagged. A lone arabic or roman point is dropped (the back cover's `57999` price code). Gaps take the next run extrapolated back when that gives ≥1, else the previous run forward.
+  - **Short sources:** under 20 pages, any correction or ≤60% coverage gives PDF-index labels.
+  - **Exclusions:** bare numbers are ignored on TOC pages (outline range) and on number-dense pages.
+- **/PageLabels cross-check** (decision 3): more than 2% disagreement on footered pages means the footers win and `label_conflict` is written to `labels.json`. AI Engineering: 519 checked, 0 disagree, so the dictionary is used.
+- **Multimap** (decision 4): `labels.json` holds `label_to_pdf`. Cross-refs resolve through it, picking the page that holds the referenced title. The renderer adds the section, or "PDF p. N", to labels that occur more than once: `p. ii (PDF p. 15)`.
+- **Scanned pages:** pages with no text layer get only their top and bottom 13% strips rendered at 150 dpi and run through tesseract. 300 dpi fails on 60-ppi scans because tesseract misreads the upsampled glyphs ("Ll1" for "181").
+- **Adversary label fixtures** (`adversarial/source-mode/fixtures`): 8 of 11 match the truth (chaptitle, clean_for_scan, pagelabels_disagree with `label_conflict`, perchapter, romanswitch with duplicate i–iii, romanwords, twocol, twonumbers). The other 3 differ by design:
+  - lying and sparse: under 20 pages with ambiguous footers, so PDF-index labels.
+  - scanned: OCR reads all 12 footers, 181–192. The fixture's blank first page is interpolated as 180; the .truth file omits that page.
+- **AI Engineering after the revision:** PDF 102 = 78, PDF 73 = 49, outline 182, xrefs 33/33, sample 10/10, about 7 s total.
+
+## 0c: Librarian briefs and citation verify
+
+Files:
+- `agents/librarian.md` (draft; tools Read, Grep, Glob only, model sonnet);
+- `spikes/unit.py` (cuts a unit into `[span-id] text` lines plus an `.ids` allow-list);
+- `spikes/brief_run.py` (prototype of `source-brief-save.sh`: runs `claude -p --agent learn-voice-teacher:librarian`, verifies, retries once on the same session, strips and marks `[unverified]` after a second failure, caches);
+- `spikes/source_verify.py` + `spikes/source-verify.sh` (the deterministic gate, plus `--render`);
+- `spikes/forge_check.py` (mutates every cite of a passing brief and counts rejections).
+
+```
+python3 spikes/unit.py spikes/out/aie "Post-Training" spikes/out/units/aie-post-training.md
+python3 spikes/brief_run.py spikes/out/aie spikes/out/units/aie-post-training.md spikes/out/briefs
+spikes/source-verify.sh spikes/out/aie spikes/out/briefs/aie-post-training.md --allow spikes/out/units/aie-post-training.md.ids
+python3 spikes/forge_check.py spikes/out/aie spikes/out/briefs/aie-post-training.md spikes/out/units/aie-post-training.md.ids
+```
+
+### Measurements (headless `claude -p --output-format json`, librarian on sonnet)
+| Unit | Source type | Unit tokens (est.) | Brief tokens (est.) | Cites | Attempt 1 | Final | Librarian context (in / out tokens) | Cost | Time |
+|---|---|---|---|---|---|---|---|---|---|
+| AI Engineering › Post-Training (pp. 78–88) | born-digital PDF | 4,778 | 2,434 | 36 | 36/36 pass | pass | 19.5k / 3.8k | $0.076 | 26 s |
+| Faraday, *Chemical History of a Candle*, Lecture III (Gutenberg EPUB) | EPUB | 7,632 | 2,011 | 32 | 30/32: 1 invented id `ch13.38` (unit ends at .36), 1 anchor not verbatim | pass after 1 retry | 22.2k + 19.1k / 6.4k | $0.209 | 46 s |
+| Synthetic lecture (VTT fixture) | captions | 154 | 864 | 17 | 17/17 cites ok, but it wrote "00:00:00" itself (rejected) | pass after 1 retry | 11.1k + 8.6k / 3.1k | $0.080 | 22 s |
+
+Brief quality, read by me against the units: claims are faithful paraphrases in the source's order and terms. Definitions and quiz seeds have definite answers. No page numbers were invented in PDF/EPUB briefs. Some claim lines pack in more detail than their single anchor proves (for example, the InstructGPT 2%/98% figure cited with an anchor from the next sentence). That is the paraphrase-fidelity gap the plan's optional fact-checker covers.
+
+### Forgery check (`forge_check.py`: every cite mutated 6–8 ways, each mutation verified separately)
+| Mutation | AIE (36 cites) | Candle (32) | VTT fuzzy (17) |
+|---|---|---|---|
+| one word swapped | 36/36 rejected | 32/32 | 17/17 |
+| "not" inserted | 36/36 | 32/32 | 17/17 |
+| number changed | 2/2 | 2/2 | n/a |
+| anchor cut to 3 words (<30 chars) | 35/35 | 30/30 | 17/17 |
+| next span id | 36/36 | 32/32 | 17/17 |
+| span outside unit | 36/36 | 32/32 | n/a (unit = whole source) |
+| anchor joined across two spans | 36/36 | 32/32 | 17/17 |
+| cite removed (claim without cite) | 36/36 | 32/32 | 17/17 |
+| **leaks** | **0** | **0** | **0** |
+
+The first VTT run leaked 41 forgeries. With the plain 0.9 ratio over prev+cur+next cues, one swapped word, the neighbour's id and cross-cue joins all passed. Fixes now in `fuzzy()`:
+- (decision 2) negations, numbers, units and comparatives must match exactly;
+- substituted words must be spelled alike (char ratio ≥ 0.6), and inserted or dropped words must be stopwords or fillers;
+- more than half of the matched window must lie inside the cited cue (decision 1: a match in a different span doesn't count).
+
+Decision 1's floor (≥6 words or ≥30 chars, or the whole short span, and not stopwords only) and the self-written-locator rule are in `check_cite()`.
+
+### Recommendations
+- Keep the librarian tool-restricted. The headless probe confirms the agent only sees Read, Grep and Glob. A script writes and caches the brief (decision 6).
+- One retry fixes everything seen so far. Both first-attempt failures were "invented a span id just past the unit end" and "wrote a timestamp itself". The retry prompt lists the checker's reasons and resumes the same session.
+- **Small sources:** the 154-token lecture produced an 864-token brief, so the brief cost more than the source. Below about 1.5k source tokens, pass the unit lines themselves to the tutor and skip the brief (fast path, rule 5).
+- Brief size sits well inside the 3k budget (0.9–2.4k).
+
+### Open risks
+- Paraphrase fidelity isn't proven by verification (see above); the `--strict` fact-checker is still unmeasured.
+- Fuzzy mode was tested only on a hand-written VTT. Real auto-captions (rolling duplicates, no punctuation) are unmeasured until a yt-dlp source is allowed.
+- Librarian cost is about $0.08 per clean unit and about $0.21 with a retry; a 10-chapter book (~60 units) costs about $5–8 to brief fully. Briefs are lazy (on first teach), so the cost is spread out.
