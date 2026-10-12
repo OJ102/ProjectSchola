@@ -11,6 +11,13 @@
               "${CLAUDE_PLUGIN_ROOT}/hooks/md-log-stop-hook.sh"
             ],
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "bash",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/speak-answered.sh"
+            ]
           }
         ]
       }
@@ -58,6 +65,21 @@
             "args": [
               "${CLAUDE_PLUGIN_ROOT}/hooks/speak-interrupt.sh"
             ]
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/speak-question.sh"
+            ],
+            "async": true
           }
         ]
       }

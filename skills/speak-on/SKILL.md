@@ -2,7 +2,7 @@
 name: speak-on
 description: Turn on speech out, so the teacher's replies are read aloud with macOS `say`. Use only when the user runs /speak-on.
 disable-model-invocation: true
-allowed-tools: Bash(bash *speak-toggle.sh" on)
+allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}/hooks/speak-toggle.sh" on)
 ---
 
 # speak-on

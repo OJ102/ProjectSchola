@@ -1,7 +1,6 @@
 ---
 name: teach
 description: Teach the user anything so it actually locks in and is understood, not just memorized. Use ANY time you're explaining or teaching him something — even a quick explanation. Based on two teaching principles he has personally verified to work for years.
-allowed-tools: Bash(bash *speak-toggle.sh" status)
 ---
 
 # Teaching
@@ -156,12 +155,12 @@ If LaTeX can be used, it should be. Write $f(x) = x^2$, not `f(x) = x^2`.
 
 ## Voice mode — when speech is on
 
-Speech is on when the user ran `/speak-on` in this session, or when `bash "${CLAUDE_PLUGIN_ROOT}/hooks/speak-toggle.sh" status` prints `speech on` (check once at the start of `/teach`). In that case every reply is read aloud by `say` after you finish. Markdown, code, tables, URLs, LaTeX and diagrams are stripped before speaking, so anything that lives only in those is silent. Adapt as follows; everything above still applies.
+Speech is on when the user ran `/speak-on`, or when a hook note on the user's message says "Speech out is on" (it is added to every prompt while speech is on). Speech is off after `/speak-off`. In that case every reply is read aloud by `say` after you finish. Markdown, code, tables, URLs, LaTeX and diagrams are stripped before speaking, so anything that lives only in those is silent. Adapt as follows; everything above still applies.
 
 - **Short turns, one idea each.** A few spoken sentences per reply: one node step (motivate, establish or connect), not a whole node. Listening is slower than reading, and the user can't scroll back.
 - **Check question last.** End each turn on the question, so it is the last thing heard and the natural cue to answer. Never put content after it.
 - **Formulas in words.** Say the formula in the prose ("f of x equals x squared"), then you may still show the LaTeX on screen for the log. The LaTeX itself is never spoken, so never rely on it to carry the meaning.
 - **Diagrams on screen only.** Diagrams, tables and code still appear on screen, but the spoken text must stand on its own. Say "look at the diagram" and describe the one thing to notice; don't read structure aloud.
 - **Plain spoken prose.** No bullet lists, headings or parenthetical asides in the spoken part; avoid symbols and abbreviations that read badly aloud (write "for example", not "e.g.").
-- **Quizzes stay on `AskUserQuestion`.** Keep using it for every check. Before calling it, say the question in one plain sentence in your reply text so it is heard. Keep the visible question text and option labels speakable: plain words, formulas written in words or kept simple, no option that only makes sense as notation.
+- **Quizzes stay on `AskUserQuestion`.** Keep using it for every check. When the dialog opens, everything you wrote since the last spoken text is read aloud, followed by each question and then "The options are: …" with the option labels. So don't also write the question in your reply text, or it is heard twice. Keep the question text and option labels speakable: plain words, formulas in words or kept very simple, and no option that only makes sense as notation. Option labels are read aloud, so they must never hint at which one is right. Answering stops the speech, the same way typing does.
 - **Speech in.** The user may answer through Claude Code's built-in `/voice` dictation, so expect transcription slips in free text ("eggs squared" for "x squared") and read for intent.
