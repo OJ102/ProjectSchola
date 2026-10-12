@@ -20,7 +20,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pdfmini import PDF, PDFError, Ref, text as pdftext  # noqa: E402
 import pagelabels  # noqa: E402
-from srcnorm import join_lines, norm  # noqa: E402
+from srcnorm import join_lines, neutralize, norm  # noqa: E402
 
 BAND = 0.08  # top/bottom fraction of the page treated as header/footer band
 OCR_BAND = 0.13  # strip height OCRed on pages without a text layer
@@ -211,6 +211,15 @@ def spans_for_page(i, page, body_lh):
     return [dict(id=f"p{i + 1:04d}.{k + 1}", **s) for k, s in enumerate(out)]
 
 
+def section_at(outline, pdf_index):
+    """Deepest outline title starting at or before a 1-based PDF page."""
+    best = None
+    for o in outline:
+        if o["pdf_index"] is not None and o["pdf_index"] <= pdf_index and (best is None or o["pdf_index"] >= best["pdf_index"]):
+            best = o
+    return best["title"] if best else None
+
+
 def main():
     args = sys.argv[1:]
     if len(args) < 2:
@@ -273,12 +282,16 @@ def main():
     labels = [{"pdf_index": i + 1, "label": final[i], "label_source": final_src[i],
                "footer": raw[i], "fit": fit[i], "fit_source": res["fit_sources"][i]} for i in range(n)]
     lj = {"sha256": sha, "pages": labels, "label_to_pdf": res["multimap"]}
-    if "label_conflict" in res["report"]:
-        lj["label_conflict"] = res["report"]["label_conflict"]
+    for key in ("label_conflict", "footer_outliers", "dict_overridden"):
+        if res["report"].get(key):
+            lj[key] = res["report"][key]
     json.dump(lj, open(os.path.join(outdir, "labels.json"), "w"), indent=1)
 
+    # all page indices in the store are 1-based (decision 14)
     for o in ol:
-        o["label"] = final[o["pdf_index"]] if o["pdf_index"] is not None and o["pdf_index"] < n else None
+        idx = o["pdf_index"]
+        o["label"] = final[idx] if idx is not None and idx < n else None
+        o["pdf_index"] = idx + 1 if idx is not None else None
     json.dump(ol, open(os.path.join(outdir, "outline.json"), "w"), indent=1)
 
     # body line height = most common block line height
@@ -300,9 +313,15 @@ def main():
                 assert s["id"] not in ids
                 ids.add(s["id"])
                 kinds[s["kind"]] = kinds.get(s["kind"], 0) + 1
+                s["text"] = neutralize(s["text"])  # no literal [[ / ]] in stored spans
                 nt = norm(s["text"])
                 rec = {"id": s["id"], "segment": f"p{i + 1:04d}", "locator": final[i], "kind": s["kind"],
                        "text": s["text"], "norm": nt, "sha1": hashlib.sha1(nt.encode()).hexdigest()}
+                if len(res["multimap"].get(final[i], [])) > 1:
+                    # duplicate label (roman index after roman front matter):
+                    # flag it and carry the section so citations can disambiguate
+                    rec["locator_ambiguous"] = True
+                    rec["section"] = section_at(ol, i + 1)
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 # id and text on one line, so a grep hit carries its span id
                 seg.append(f"[{s['id']}] {s['text']}")
@@ -344,7 +363,7 @@ def main():
         "fit_matches_dict": fit_vs_dict,
         "fit_sources": {s: res["fit_sources"].count(s) for s in set(res["fit_sources"])},
         "outline_items": len(ol), "outline_unresolved": sum(1 for o in ol if o["pdf_index"] is None),
-        "top_level": [(o["title"], o["pdf_index"] + 1 if o["pdf_index"] is not None else None, o["label"]) for o in ol if o["depth"] == 1],
+        "top_level": [(o["title"], o["pdf_index"], o["label"]) for o in ol if o["depth"] == 1],
         "spans": nspans, "span_kinds": kinds, "body_line_height": body_lh,
         "xrefs": xrefs, "xrefs_resolved": xok, "xrefs_failed": xbad[:15],
         "sample10_ok": f"{sample_ok}/{len(sample)}",

@@ -21,7 +21,8 @@ MAX_OBJS = 2_000_000
 MAX_DEPTH = 100          # nesting of arrays/dicts, and tree walks
 MAX_PAGES = 100_000
 MAX_LABEL_VALUE = 100_000
-MAX_STREAM = 64 * 1024 * 1024  # /St beyond this is treated as absent
+MAX_STREAM = 64 * 1024 * 1024
+MAX_INFLATED = 256 * 1024 * 1024  # all streams together (memory amplification)  # /St beyond this is treated as absent
 TIMEOUT = 30.0           # seconds for one PDF()
 
 
@@ -232,6 +233,9 @@ class PDF:
                 return None
             if z.unconsumed_tail:
                 raise PDFError("stream too large after decompression")
+            self.inflated = getattr(self, "inflated", 0) + len(out)
+            if self.inflated > MAX_INFLATED:
+                raise PDFError("total decompressed size over budget")
             return out
         return raw if f is None else None
 

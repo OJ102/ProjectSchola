@@ -31,8 +31,8 @@ def pdf_unit(spans, outline, title):
         sys.exit(f"no outline item {title!r}")
     o = outline[idx]
     nxt = next((x for x in outline[idx + 1:] if x["depth"] <= o["depth"]), None)
-    start = o["pdf_index"] + 1
-    end = nxt["pdf_index"] + 1 if nxt else 10 ** 9
+    start = o["pdf_index"]  # 1-based
+    end = nxt["pdf_index"] if nxt else 10 ** 9
     seg = lambda s: int(s["segment"][1:])
     sel = [s for s in spans if start <= seg(s) <= end]
     # trim to the heading spans on the boundary pages
