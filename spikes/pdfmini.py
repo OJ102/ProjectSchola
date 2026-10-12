@@ -6,10 +6,27 @@ PDFs hide the catalog. It does not trust the xref table: it scans for every
 `N G obj` and every object stream, so it also survives broken xrefs.
 Not a general PDF library: no encryption, no incremental-update ordering
 beyond "last definition wins".
+
+Fails closed (design decision 10): input size, object count, nesting depth,
+page count and wall-clock caps raise PDFError instead of hanging; callers fall
+back to the footer fit.
 """
 import re
 import sys
+import time
 import zlib
+
+MAX_BYTES = 512 * 1024 * 1024
+MAX_OBJS = 2_000_000
+MAX_DEPTH = 100          # nesting of arrays/dicts, and tree walks
+MAX_PAGES = 100_000
+MAX_LABEL_VALUE = 100_000
+MAX_STREAM = 64 * 1024 * 1024  # /St beyond this is treated as absent
+TIMEOUT = 30.0           # seconds for one PDF()
+
+
+class PDFError(Exception):
+    pass
 
 WS = b" \t\r\n\f\x00"
 DELIM = b"()<>[]{}/%"
@@ -30,8 +47,14 @@ class Name(str):
 
 
 class Parser:
-    def __init__(self, data, pos=0):
+    def __init__(self, data, pos=0, deadline=None):
         self.d, self.p = data, pos
+        self.deadline = deadline
+        self.nest = 0
+
+    def eof(self, what):
+        if self.p >= len(self.d):
+            raise PDFError(f"truncated {what}")
 
     def ws(self):
         d = self.d
@@ -53,7 +76,19 @@ class Parser:
         return d[s:self.p]
 
     def obj(self):
+        self.nest += 1
+        try:
+            if self.nest > MAX_DEPTH:
+                raise PDFError("object nesting too deep")
+            if self.deadline and time.monotonic() > self.deadline:
+                raise PDFError("timeout")
+            return self._obj()
+        finally:
+            self.nest -= 1
+
+    def _obj(self):
         self.ws()
+        self.eof("object")
         d = self.d
         c = d[self.p:self.p + 1]
         if c == b"<" and d[self.p:self.p + 2] == b"<<":
@@ -61,6 +96,7 @@ class Parser:
             out = {}
             while True:
                 self.ws()
+                self.eof("dictionary")
                 if d[self.p:self.p + 2] == b">>":
                     self.p += 2
                     return out
@@ -68,7 +104,9 @@ class Parser:
                 v = self.obj()
                 out[str(k)] = v
         if c == b"<":
-            e = d.index(b">", self.p)
+            e = d.find(b">", self.p)
+            if e < 0:
+                raise PDFError("truncated hex string")
             h = re.sub(rb"\s", b"", d[self.p + 1:e])
             self.p = e + 1
             if len(h) % 2:
@@ -79,6 +117,7 @@ class Parser:
             out = []
             while True:
                 self.ws()
+                self.eof("array")
                 if d[self.p:self.p + 1] == b"]":
                     self.p += 1
                     return out
@@ -146,7 +185,7 @@ class Parser:
                 out += c
             else:
                 out += c
-        return bytes(out)
+        raise PDFError("truncated string")
 
 
 def text(b):
@@ -159,11 +198,14 @@ def text(b):
 
 
 class PDF:
-    def __init__(self, path):
+    def __init__(self, path, timeout=TIMEOUT):
         with open(path, "rb") as f:
-            self.d = f.read()
+            self.d = f.read(MAX_BYTES + 1)
+        if len(self.d) > MAX_BYTES:
+            raise PDFError("file too large")
         if not self.d.startswith(b"%PDF"):
-            raise ValueError("not a PDF")
+            raise PDFError("not a PDF")
+        self.deadline = time.monotonic() + timeout
         self.objs = {}
         self.encrypted = b"/Encrypt" in self.d
         self._scan()
@@ -182,20 +224,30 @@ class PDF:
             raw = d[p:d.index(b"endstream", p)]
         f = dic.get("Filter")
         if f == "FlateDecode" or f == ["FlateDecode"]:
+            # bounded inflate: a stream may not expand past MAX_STREAM bytes
+            z = zlib.decompressobj()
             try:
-                return zlib.decompress(raw)
+                out = z.decompress(raw, MAX_STREAM)
             except zlib.error:
-                return zlib.decompressobj().decompress(raw)
+                return None
+            if z.unconsumed_tail:
+                raise PDFError("stream too large after decompression")
+            return out
         return raw if f is None else None
 
     def _scan(self):
         d = self.d
         for m in re.finditer(rb"(?<![0-9])(\d+)\s+(\d+)\s+obj\b", d):
+            self.tick()
             num = int(m.group(1))
-            ps = Parser(d, m.end())
+            ps = Parser(d, m.end(), self.deadline)
             try:
                 o = ps.obj()
-            except Exception:
+            except PDFError as e:
+                if str(e) == "timeout":
+                    raise
+                continue
+            except (ValueError, IndexError, RecursionError):
                 continue
             if isinstance(o, dict):
                 ps.ws()
@@ -203,19 +255,46 @@ class PDF:
                     o = dict(o)
                     o["__stream_at"] = ps.p + 6
             self.objs[num] = o
-        # expand object streams
+            if len(self.objs) > MAX_OBJS:
+                raise PDFError("too many objects")
+        # expand object streams; a broken stream is skipped, not fatal
         for num, o in list(self.objs.items()):
             if isinstance(o, dict) and o.get("Type") == "ObjStm" and "__stream_at" in o:
-                o = {k: self.resolve(v) for k, v in o.items()}
-                body = self._stream(o, o["__stream_at"])
-                if body is None:
+                try:
+                    self._expand_objstm(o)
+                except PDFError as e:
+                    if str(e) == "timeout":
+                        raise
+                except (ValueError, IndexError, TypeError, KeyError, zlib.error, RecursionError):
                     continue
-                n, first = o["N"], o["First"]
-                hdr = Parser(body)
-                pairs = [(hdr.obj(), hdr.obj()) for _ in range(n)]
-                for onum, off in pairs:
-                    if onum not in self.objs or not isinstance(self.objs[onum], dict) or self.objs[onum].get("Type") != "ObjStm":
-                        self.objs.setdefault(onum, Parser(body, first + off).obj())
+        self.objstm_count = sum(1 for o in self.objs.values() if isinstance(o, dict) and o.get("Type") == "ObjStm")
+
+    def tick(self):
+        if time.monotonic() > self.deadline:
+            raise PDFError("timeout")
+
+    def _expand_objstm(self, o):
+        o = {k: self.resolve(v) for k, v in o.items()}
+        body = self._stream(o, o["__stream_at"])
+        if body is None:
+            return
+        n, first = o["N"], o["First"]
+        if not (isinstance(n, int) and isinstance(first, int)) or n < 0 or n > MAX_OBJS:
+            return
+        hdr = Parser(body, 0, self.deadline)
+        pairs = [(hdr.obj(), hdr.obj()) for _ in range(n)]
+        for onum, off in pairs:
+            self.tick()
+            if not (isinstance(onum, int) and isinstance(off, int)):
+                continue
+            if onum not in self.objs:
+                try:
+                    self.objs[onum] = Parser(body, first + off, self.deadline).obj()
+                except PDFError as e:
+                    if str(e) == "timeout":
+                        raise
+            if len(self.objs) > MAX_OBJS:
+                raise PDFError("too many objects")
 
     def resolve(self, v):
         seen = 0
@@ -230,11 +309,22 @@ class PDF:
         return self._stream(o2, o["__stream_at"])
 
     def catalog(self):
-        # prefer the trailer /Root (from trailer dict or xref stream dict)
-        roots = re.findall(rb"/Root\s+(\d+)\s+\d+\s+R", self.d)
-        if roots:
-            c = self.objs.get(int(roots[-1]))
-            if isinstance(c, dict):
+        # /Root only from a real trailer dict or an /XRef stream dict, never
+        # from arbitrary bytes (page text can contain "/Root 50 0 R").
+        roots = []
+        for m in re.finditer(rb"(?<![A-Za-z])trailer\s*<<", self.d):
+            try:
+                t = Parser(self.d, m.end() - 2, self.deadline).obj()
+            except PDFError:
+                continue
+            if isinstance(t, dict) and isinstance(t.get("Root"), Ref):
+                roots.append(t["Root"].num)
+        for o in self.objs.values():
+            if isinstance(o, dict) and o.get("Type") == "XRef" and isinstance(o.get("Root"), Ref):
+                roots.append(o["Root"].num)
+        for r in reversed(roots):
+            c = self.objs.get(r)
+            if isinstance(c, dict) and (c.get("Type") == "Catalog" or "Pages" in c):
                 return c
         for o in self.objs.values():
             if isinstance(o, dict) and o.get("Type") == "Catalog":
@@ -243,54 +333,81 @@ class PDF:
 
     def pages(self):
         """Page object numbers in document order."""
+        if getattr(self, "_pages", None) is not None:
+            return self._pages
         cat = self.catalog()
-        out = []
+        if not cat or "Pages" not in cat:
+            raise PDFError("no catalog or page tree")
+        out, seen = [], set()
 
         def walk(node_ref, depth=0):
-            if depth > 64:
-                return
+            if depth > MAX_DEPTH:
+                raise PDFError("page tree too deep")
+            if isinstance(node_ref, Ref):
+                if node_ref.num in seen:
+                    return  # shared or cyclic node: visit once
+                seen.add(node_ref.num)
+            self.tick()
             node = self.resolve(node_ref)
             if not isinstance(node, dict):
                 return
             if node.get("Type") == "Pages" or "Kids" in node:
-                for k in self.resolve(node.get("Kids")) or []:
+                kids = self.resolve(node.get("Kids"))
+                for k in kids if isinstance(kids, list) else []:
                     walk(k, depth + 1)
             else:
                 out.append(node_ref.num if isinstance(node_ref, Ref) else None)
+                if len(out) > MAX_PAGES:
+                    raise PDFError("too many pages")
         walk(cat["Pages"])
+        self._pages = out
         return out
 
     def number_tree(self, root):
         """Flatten a number tree into a sorted list of (key, value)."""
-        out = []
+        out, seen = [], set()
 
         def walk(n, depth=0):
+            if isinstance(n, Ref):
+                if n.num in seen:
+                    return
+                seen.add(n.num)
             n = self.resolve(n)
-            if not isinstance(n, dict) or depth > 32:
+            if not isinstance(n, dict) or depth > MAX_DEPTH:
                 return
-            nums = self.resolve(n.get("Nums")) or []
+            nums = self.resolve(n.get("Nums"))
+            nums = nums if isinstance(nums, list) else []
             for i in range(0, len(nums) - 1, 2):
-                out.append((nums[i], self.resolve(nums[i + 1])))
-            for k in self.resolve(n.get("Kids")) or []:
+                k = self.resolve(nums[i])
+                if isinstance(k, int) and not isinstance(k, bool) and k >= 0:
+                    out.append((k, self.resolve(nums[i + 1])))
+            kids = self.resolve(n.get("Kids"))
+            for k in kids if isinstance(kids, list) else []:
                 walk(k, depth + 1)
         walk(root)
         return sorted(out, key=lambda kv: kv[0])
 
     def page_labels(self):
-        """Return list of labels (one per page) from /PageLabels, or None."""
+        """Labels from /PageLabels, one per page (None where the dictionary
+        gives no usable label), or None if there is no dictionary."""
         cat = self.catalog()
         if not cat or "PageLabels" not in cat:
             return None
         ranges = self.number_tree(cat["PageLabels"])
         n = len(self.pages())
-        labels = []
+        labels = [None] * n
         for i, (start, spec) in enumerate(ranges):
             end = ranges[i + 1][0] if i + 1 < len(ranges) else n
-            spec = spec or {}
-            st, pre, first = spec.get("S"), text(self.resolve(spec.get("P", b""))), spec.get("St", 1)
+            spec = spec if isinstance(spec, dict) else {}
+            st = spec.get("S")
+            pre = text(self.resolve(spec.get("P", b"")))[:64]
+            first = self.resolve(spec.get("St", 1))
+            if not isinstance(first, int) or first < 1 or first > MAX_LABEL_VALUE:
+                continue  # insane start value: leave these pages unlabeled
             for k in range(start, min(end, n)):
                 v = first + (k - start)
-                labels.append(pre + fmt(st, v))
+                lab = pre + (fmt(st, v) if v <= MAX_LABEL_VALUE else "")
+                labels[k] = lab or None
         return labels
 
 
@@ -323,7 +440,11 @@ def fmt(style, v):
 
 
 if __name__ == "__main__":
-    pdf = PDF(sys.argv[1])
+    try:
+        pdf = PDF(sys.argv[1])
+        pdf.pages()
+    except (PDFError, OSError) as e:
+        sys.exit(f"pdfmini: {e}")
     cat = pdf.catalog()
     print("objects:", len(pdf.objs), "encrypted:", pdf.encrypted)
     print("catalog keys:", sorted(k for k in (cat or {}) if not k.startswith("__")))

@@ -18,21 +18,12 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pdfmini import PDF, Ref, text as pdftext, roman  # noqa: E402
+from pdfmini import PDF, PDFError, Ref, text as pdftext  # noqa: E402
+import pagelabels  # noqa: E402
 from srcnorm import join_lines, norm  # noqa: E402
 
 BAND = 0.08  # top/bottom fraction of the page treated as header/footer band
-ROMAN_RE = r"[ivxlcdm]+"
-
-
-def from_roman(s):
-    vals = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
-    s = s.lower()
-    tot = 0
-    for i, ch in enumerate(s):
-        v = vals[ch]
-        tot += -v if i + 1 < len(s) and vals[s[i + 1]] > v else v
-    return tot if roman(tot) == s else None
+OCR_BAND = 0.13  # strip height OCRed on pages without a text layer
 
 
 # ---------------------------------------------------------------- text layer
@@ -46,17 +37,18 @@ def bbox_pages(pdf_path):
     h = r.stdout.decode("utf-8", "replace")
     pages = []
     for pm in re.finditer(r'<page width="([\d.]+)" height="([\d.]+)">(.*?)</page>', h, re.S):
-        blocks = []
+        blocks, vl = [], []
         for bm in re.finditer(r'<block xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">(.*?)</block>', pm.group(3), re.S):
             lines, lhs = [], []
-            for lm in re.finditer(r'<line xMin="[\d.]+" yMin="([\d.]+)" xMax="[\d.]+" yMax="([\d.]+)">(.*?)</line>', bm.group(5), re.S):
-                words = [html.unescape(w) for w in re.findall(r">([^<]*)</word>", lm.group(3))]
+            for lm in re.finditer(r'<line xMin="([\d.]+)" yMin="([\d.]+)" xMax="[\d.]+" yMax="([\d.]+)">(.*?)</line>', bm.group(5), re.S):
+                words = [html.unescape(w) for w in re.findall(r">([^<]*)</word>", lm.group(4))]
                 lines.append(" ".join(words))
-                lhs.append(float(lm.group(2)) - float(lm.group(1)))
+                lhs.append(float(lm.group(3)) - float(lm.group(2)))
+                vl.append((float(lm.group(2)), float(lm.group(1)), lines[-1]))
             if lines:
                 blocks.append({"x0": float(bm.group(1)), "y0": float(bm.group(2)), "y1": float(bm.group(4)),
                                "lines": lines, "lh": sorted(lhs)[len(lhs) // 2]})
-        pages.append({"w": float(pm.group(1)), "h": float(pm.group(2)), "blocks": blocks})
+        pages.append({"w": float(pm.group(1)), "h": float(pm.group(2)), "blocks": blocks, "vl": vl})
     return pages
 
 
@@ -98,83 +90,49 @@ def xml_pages(pdf_path):
         for b in blocks:
             b["y1"] = b.pop("_bottom") / scale
             b.pop("_font")
-        pages.append({"w": pw / scale, "h": ph / scale, "blocks": blocks, "via": "pdftohtml"})
+        vl = [(top / scale, left / scale, t) for top, left, _, _, t in merged]
+        pages.append({"w": pw / scale, "h": ph / scale, "blocks": blocks, "vl": vl, "via": "pdftohtml"})
     return pages
 
 
 # ---------------------------------------------------------------- page labels
-FOOTER_RES = [
-    re.compile(rf"^\s*(\d+|{ROMAN_RE})\s*\|", re.I),           # "78 | Chapter 2"
-    re.compile(rf"\|\s*(\d+|{ROMAN_RE})\s*$", re.I),           # "Post-Training | 79"
-    re.compile(rf"^\s*page\s+(\d+|{ROMAN_RE})\b", re.I),       # "Page 12"
-    re.compile(rf"^\s*[-–]?\s*(\d+|{ROMAN_RE})\s*[-–]?\s*$", re.I),  # bare "12" / "- 12 -"
-]
+def visual_lines(page):
+    """Merge text-layer lines that share a baseline (+/-3pt) into visual lines,
+    left to right, top to bottom: [(y, text)]."""
+    ls = sorted(page.get("vl", []), key=lambda l: (l[0], l[1]))
+    out = []
+    for y, x, t in ls:
+        if out and abs(out[-1][0] - y) <= 3:
+            out[-1][2].append((x, t))
+        else:
+            out.append([y, x, [(x, t)]])
+    return [(y, " ".join(t for _, t in sorted(parts))) for y, _, parts in out]
 
 
-def band_text(page, top):
-    h = page["h"]
-    bs = [b for b in page["blocks"] if (b["y1"] <= h * BAND if top else b["y0"] >= h * (1 - BAND))]
-    bs.sort(key=lambda b: (round(b["y0"]), b["x0"]))
-    return " ".join(" ".join(b["lines"]) for b in bs)
-
-
-def footer_label(page):
-    for top in (False, True):
-        t = band_text(page, top).strip()
-        if not t:
+def ocr_strips(pdf_path, i, page):
+    """Pages with no text layer: OCR only the top and bottom 8% strips."""
+    lines = []
+    # 150 dpi: higher resolutions upsample low-ppi scans and hurt tesseract
+    r = 150 / 72
+    W, H = int(page["w"] * r), int(page["h"] * r)
+    strip = int(H * OCR_BAND)
+    for y0 in (0, H - strip):
+        ppm = subprocess.run(["pdftoppm", "-r", "150", "-gray", "-f", str(i + 1), "-l", str(i + 1),
+                              "-x", "0", "-y", str(y0), "-W", str(W), "-H", str(strip), pdf_path],
+                             capture_output=True)
+        if ppm.returncode != 0 or not ppm.stdout:
             continue
-        for rx in FOOTER_RES:
-            m = rx.search(t)
-            if m:
-                return m.group(1).lower(), "footer" if not top else "header"
-    return None, None
+        t = subprocess.run(["tesseract", "stdin", "stdout", "--psm", "6"], input=ppm.stdout, capture_output=True)
+        for k, ln in enumerate(t.stdout.decode("utf-8", "replace").split("\n")):
+            if ln.strip():
+                lines.append(((y0 / r) + k, ln.strip()))
+    return lines
 
 
-def fit_labels(raw, n):
-    """Monotonic fit. raw[i] = label str or None. Returns (labels, sources).
-
-    Arabic labels vote for offset = i - value; roman labels vote for a roman
-    offset. Each page takes the offset that is the majority in a +/-15 page
-    window of its own numeral system; outliers are corrected to the fit.
-    """
-    arab = {i: int(v) for i, v in enumerate(raw) if v and v.isdigit()}
-    rom = {i: from_roman(v) for i, v in enumerate(raw) if v and not v.isdigit() and from_roman(v)}
-    labels, sources = [None] * n, [None] * n
-
-    def window_offset(points, i, w=15):
-        votes = {}
-        for j in range(max(0, i - w), min(n, i + w + 1)):
-            if j in points:
-                votes[j - points[j]] = votes.get(j - points[j], 0) + 1
-        if not votes:
-            return None, 0
-        off, c = max(votes.items(), key=lambda kv: kv[1])
-        return off, c
-
-    last_arab = max(arab) if arab else -1
-    for i in range(n):
-        # Arabic wins wherever its extrapolation is >= 1 (body numbering starts
-        # at 1 on the first main page, often a footer-less chapter opener);
-        # roman covers the front matter before that.
-        system, v = None, 0
-        for cand in (arab, rom):
-            off, votes = window_offset(cand, i)
-            if off is not None and votes >= 2 and i - off >= 1:
-                system, v = cand, i - off
-                break
-        if system is None:
-            continue
-        lab = str(v) if system is arab else roman(v)
-        if raw[i] == lab:
-            labels[i], sources[i] = lab, "footer"
-        elif raw[i]:
-            labels[i], sources[i] = lab, "corrected"
-        elif i <= last_arab + 3 or system is rom:
-            labels[i], sources[i] = lab, "interpolated"
-    for i in range(n):
-        if labels[i] is None:
-            labels[i], sources[i] = f"PDF p. {i + 1}", "fallback"
-    return labels, sources
+def number_dense(vl):
+    if len(vl) < 8:
+        return False
+    return sum(1 for _, t in vl if re.search(r"\d\s*$", t)) > 0.4 * len(vl)
 
 
 # ---------------------------------------------------------------- outline
@@ -262,42 +220,63 @@ def main():
     t0 = time.time()
     os.makedirs(os.path.join(outdir, "segments"), exist_ok=True)
     sha = hashlib.sha256(open(pdf_path, "rb").read()).hexdigest()
-    pdf = PDF(pdf_path)
-    n = len(pdf.pages())
+    pdf_err = None
+    try:
+        pdf = PDF(pdf_path)
+        n = len(pdf.pages())
+        dict_labels = pdf.page_labels()
+    except PDFError as e:
+        # fail closed: no dictionary, no outline; labels come from the footers
+        pdf, n, dict_labels, pdf_err = None, None, None, str(e)
     t_parse = time.time() - t0
 
-    dict_labels = pdf.page_labels()
     pages = bbox_pages(pdf_path)
     t_text = time.time() - t0 - t_parse
-    if len(pages) != n:
+    if n is None:
+        n = len(pages)
+    elif len(pages) != n:
         print(f"WARN: text layer pages {len(pages)} != page tree {n}")
         n = min(n, len(pages))
+    if dict_labels is not None:
+        dict_labels = dict_labels[:n]
 
-    raw, raw_src = [], []
-    for p in pages[:n]:
-        lab, src = footer_label(p)
-        raw.append(lab)
-        raw_src.append(src)
-    fit, fit_src = fit_labels(raw, n)
+    ol = []
+    if pdf is not None:
+        try:
+            ol = outline(pdf)
+        except (PDFError, RecursionError) as e:
+            pdf_err = f"outline: {e}"
 
-    # Final labels: dictionary wins when present; record agreement with footers.
-    if dict_labels and len(dict_labels) >= n:
-        final = dict_labels[:n]
-        final_src = ["pagelabels"] * n
-    else:
-        final, final_src = fit, fit_src
+    # TOC pages (from the outline) and number-dense pages ignore bare numbers
+    vls, ocr_pages = [], []
+    for i, p in enumerate(pages[:n]):
+        vl = visual_lines(p)
+        if not vl:
+            vl = ocr_strips(pdf_path, i, p)
+            if vl:
+                ocr_pages.append(i + 1)
+        vls.append(vl)
+    skip_bare = {i for i, vl in enumerate(vls) if number_dense(vl)}
+    for k, o in enumerate(ol):
+        if re.fullmatch(r"(table of )?contents\.?", o["title"].strip(), re.I) and o["pdf_index"] is not None:
+            nxt = next((x["pdf_index"] for x in ol[k + 1:] if x["pdf_index"] is not None and x["depth"] <= o["depth"]), o["pdf_index"] + 1)
+            skip_bare |= set(range(o["pdf_index"], max(nxt, o["pdf_index"] + 1)))
 
+    res = pagelabels.resolve(vls, dict_labels, frozenset(skip_bare))
+    final, final_src, raw, fit = res["labels"], res["sources"], res["raw"], res["fit"]
     agree = sum(1 for i in range(n) if raw[i] and raw[i] == final[i].lower())
     disagree = [(i + 1, raw[i], final[i]) for i in range(n) if raw[i] and raw[i] != final[i].lower()]
     fit_vs_dict = None
     if dict_labels:
-        fit_vs_dict = sum(1 for i in range(n) if fit[i].lower() == dict_labels[i].lower())
+        fit_vs_dict = sum(1 for i in range(n) if fit[i] and dict_labels[i] and fit[i].lower() == dict_labels[i].lower())
 
     labels = [{"pdf_index": i + 1, "label": final[i], "label_source": final_src[i],
-               "footer": raw[i], "fit": fit[i], "fit_source": fit_src[i]} for i in range(n)]
-    json.dump({"sha256": sha, "pages": labels}, open(os.path.join(outdir, "labels.json"), "w"), indent=1)
+               "footer": raw[i], "fit": fit[i], "fit_source": res["fit_sources"][i]} for i in range(n)]
+    lj = {"sha256": sha, "pages": labels, "label_to_pdf": res["multimap"]}
+    if "label_conflict" in res["report"]:
+        lj["label_conflict"] = res["report"]["label_conflict"]
+    json.dump(lj, open(os.path.join(outdir, "labels.json"), "w"), indent=1)
 
-    ol = outline(pdf)
     for o in ol:
         o["label"] = final[o["pdf_index"]] if o["pdf_index"] is not None and o["pdf_index"] < n else None
     json.dump(ol, open(os.path.join(outdir, "outline.json"), "w"), indent=1)
@@ -330,16 +309,20 @@ def main():
             with open(os.path.join(outdir, "segments", f"p{i + 1:04d}.md"), "w") as sf:
                 sf.write(f"<!-- page {final[i]} (PDF {i + 1}) -->\n\n" + "\n".join(seg))
 
-    # Cross-reference check: '"Title" on page N' must find Title on the page labelled N
-    label_to_idx = {final[i].lower(): i for i in range(n)}
+    # Cross-reference check: '"Title" on page N' must find Title on a page
+    # labelled N (label multimap; with duplicates, the page holding the title
+    # nearest to the referring page wins)
+    label_to_idx = {}
+    for lab, idxs in res["multimap"].items():
+        label_to_idx.setdefault(lab.lower(), []).extend(k - 1 for k in idxs)
     page_norm = [norm(" ".join(join_lines(b["lines"]) for b in p["blocks"])) for p in pages[:n]]
     xrefs, xok, xbad = 0, 0, []
     for i in range(n):
         for m in re.finditer(r'"([^"]{3,80})" on page (\d+)', page_norm[i]):
             xrefs += 1
             title, lab = m.group(1).strip(" ,."), m.group(2)
-            j = label_to_idx.get(lab)
-            if j is not None and title in page_norm[j]:
+            hits = [j for j in label_to_idx.get(lab, []) if title in page_norm[j]]
+            if hits:
                 xok += 1
             else:
                 xbad.append((i + 1, title, lab))
@@ -351,13 +334,14 @@ def main():
     sample_ok = sum(1 for i in sample if raw[i] == final[i].lower())
 
     rep = {
-        "pdf_pages": n, "sha256": sha,
+        "pdf_pages": n, "sha256": sha, "pdf_error": pdf_err, "ocr_strip_pages": ocr_pages,
+        "label_report": res["report"],
         "pagelabels_dict": dict_labels is not None,
         "footer_labels_read": sum(1 for r in raw if r),
         "footer_agree_with_final": agree,
         "footer_disagree": disagree[:20], "footer_disagree_count": len(disagree),
         "fit_matches_dict": fit_vs_dict,
-        "fit_sources": {s: fit_src.count(s) for s in set(fit_src)},
+        "fit_sources": {s: res["fit_sources"].count(s) for s in set(res["fit_sources"])},
         "outline_items": len(ol), "outline_unresolved": sum(1 for o in ol if o["pdf_index"] is None),
         "top_level": [(o["title"], o["pdf_index"] + 1 if o["pdf_index"] is not None else None, o["label"]) for o in ol if o["depth"] == 1],
         "spans": nspans, "span_kinds": kinds, "body_line_height": body_lh,

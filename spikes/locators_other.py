@@ -39,6 +39,7 @@ class ChapterParser(HTMLParser):
         self.page = None
         self.skip = 0
         self.last_id = None
+        self.ids_seen = []  # element ids met since the previous item (nav targets)
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -46,6 +47,7 @@ class ChapterParser(HTMLParser):
             self.skip += 1
         if a.get("id"):
             self.last_id = a["id"]
+            self.ids_seen.append(a["id"])
         et = a.get("epub:type", "") or a.get("role", "")
         if "pagebreak" in et or a.get("role") == "doc-pagebreak":
             self.page = a.get("title") or a.get("aria-label") or re.sub(r"\D", "", a.get("id", "")) or self.page
@@ -67,7 +69,8 @@ class ChapterParser(HTMLParser):
                 t = re.sub(r"\s+", " ", "".join(self.buf)).strip()
                 if t:
                     kind = "heading" if tag in self.HEADS else {"li": "list", "pre": "code", "figcaption": "caption"}.get(tag, "para")
-                    self.items.append((kind, t, self.page, self.cur_id, tag))
+                    self.items.append((kind, t, self.page, self.cur_id, tag, self.ids_seen))
+                    self.ids_seen = []
                 self.cur = None
 
     def handle_data(self, data):
@@ -109,34 +112,49 @@ def epub(path, outdir):
                 outline.append({"title": html.unescape(re.sub(r"<[^>]+>", "", tok.group(3))).strip(),
                                 "href": posixpath.normpath(posixpath.join(posixpath.dirname(nav_href.group(1)), tok.group(2))),
                                 "depth": depth})
-    spans, ch = [], 0
+    # nav targets relative to the OPF dir: (file, anchor) -> outline index
+    nav_dir = posixpath.dirname(nav_href.group(1)) if nav_href else ""
+    targets = {}
+    for i, o in enumerate(outline):
+        f, _, anc = o["href"].partition("#")
+        targets.setdefault((f, anc), i)
+    spans, ch, k, para = [], 0, 0, 0
+    path, head = [], None  # current nav path (titles by depth), sub-heading
     for href in spine:
         full = posixpath.join(base, href)
-        if full not in names or "nav" in href and nav_href and href == nav_href.group(1):
+        if full not in names or (nav_href and href == nav_href.group(1)):
             continue
         p = ChapterParser()
         p.feed(z.read(full).decode("utf-8", "replace"))
-        if not any(k != "heading" for k, *_ in p.items):
-            continue
-        ch += 1
-        chap, head, para = None, None, 0
-        k = 0
-        for kind, t, page, eid, tag in p.items:
-            if kind == "heading":
-                if tag == "h1" or chap is None:
-                    chap, head = t, None
-                else:
-                    head = t
-                para = 0
-            else:
+        file_key = posixpath.normpath(posixpath.join(nav_dir, posixpath.relpath(href, nav_dir or ".")))
+        first = True
+        for kind, t, page, eid, tag, ids in p.items:
+            hit = None
+            for cand in ([""] if first else []) + ids:
+                if (href, cand) in targets or (file_key, cand) in targets:
+                    hit = targets.get((href, cand), targets.get((file_key, cand)))
+            first = False
+            if hit is not None or ch == 0:
+                if hit is not None:
+                    o = outline[hit]
+                    path = path[:max(0, o["depth"] - 1)] + [o["title"]]
+                elif not path:
+                    path = [t if kind == "heading" else href]
+                ch, k, para, head = ch + 1, 0, 0, None
+            elif kind == "heading" and not outline:
+                path, head, para = [t], None, 0
+            elif kind == "heading":
+                head, para = t, 0
+            if kind != "heading":
                 para += 1
             k += 1
-            loc = chap or href
+            loc = " › ".join(path)
             if head:
                 loc += f" § {head}"
             if kind != "heading":
                 loc += f" ¶{para}"
-            spans.append(rec(f"ch{ch:02d}.{k}", f"ch{ch:02d}", loc, kind, t, page=page, href=f"{href}#{eid}" if eid else href))
+            spans.append(rec(f"ch{ch:02d}.{k}", f"ch{ch:02d}", loc, kind, t, page=page,
+                             href=f"{href}#{eid}" if eid else href))
     write(outdir, spans, outline)
     return spans, outline
 
