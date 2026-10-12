@@ -28,13 +28,13 @@ if [ -f "$TRANSCRIPT_PATH" ]; then
   fi
   SCAN=$(speak_turn_scan "$TRANSCRIPT_PATH" "$TOOL_USE_ID")
   if [ -n "$SCAN" ]; then
-    OUT=$(jq -cn --argjson s "$SCAN" --arg m "$(speak_marker)" --arg tid "$TOOL_USE_ID" '
-      ($m | tonumber? // null) as $m0
+    OUT=$(jq -c --arg m "$(speak_marker)" --arg tid "$TOOL_USE_ID" '
+      . as $s | ($m | tonumber? // null) as $m0
       | (if $m0 != null and $m0 >= $s.start then $m0 else $s.start end) as $mk
       | if $s.tl != null then {t: [$s.b[] | select(.n > $mk and .n <= $s.tl) | .t], m: $s.tl}
         elif $tid == "" then {t: [$s.b[] | select(.n > $mk) | .t], m: $s.n}
         else {t: [], m: $mk} end
-      | .t |= join("\n\n")' 2>/dev/null)
+      | .t |= join("\n\n")' <<<"$SCAN" 2>/dev/null)
     MSG=$(jq -r '.t // empty' <<<"$OUT" 2>/dev/null)
     speak_set_marker "$(jq -r '.m // 0' <<<"$OUT" 2>/dev/null)"
   fi

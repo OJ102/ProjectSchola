@@ -100,20 +100,26 @@ speak_set_marker() { mkdir -p -- "$SPEAK_STATE_DIR" 2>/dev/null; echo "$1" > "$S
 
 # Scan the transcript ($1) for the current turn (after the last real user prompt). Prints one JSON object:
 #   {start: line of that prompt, n: last line, lt: line of the last tool call, tl: line of tool_use id $2,
-#    b: [{n: line, t: trimmed text}] for each assistant text block of the turn}
+#    b: [{n: line, t: trimmed text, capped}] for each assistant text block of the turn}
+# Pass the result to jq on stdin, never as an argument (it can exceed ARG_MAX).
 speak_turn_scan() {
-  jq -Rcn --arg tid "${2:-}" '
+  jq -Rcn --arg tid "${2:-}" --argjson cap "$((SPEAK_MAX_CHARS * 2))" '
     reduce inputs as $raw ({n: 0, start: 0, lt: null, tl: null, b: []};
       .n += 1
       | ($raw | (fromjson? // (gsub("\\\\u[dD][89a-fA-F][0-9a-fA-F]{2}"; "\\ufffd") | fromjson?))) as $e
       | if ($e | type) != "object" or ($e.isSidechain // false) then .
         elif $e.type == "user" then
-          (if ($e.message.content | type) == "string" then .b = [] | .lt = null | .tl = null | .start = .n else . end)
+          # A real prompt (text, or text plus images) starts a new turn; tool results and meta entries do not.
+          ($e.message.content) as $uc
+          | (if ($e.isMeta // false) | not
+                and (($uc | type) == "string"
+                     or (($uc | type) == "array" and (any($uc[]; .type? == "tool_result") | not)))
+             then .b = [] | .lt = null | .tl = null | .start = .n else . end)
         elif $e.type == "assistant" then
           .n as $n | ($e.message.content // []) as $c
-          | if ($c | type) == "string" then .b += [{n: $n, t: $c}]
+          | if ($c | type) == "string" then .b += [{n: $n, t: $c[0:$cap]}]
             elif ($c | type) == "array" then
-              .b += [$c[] | select(.type? == "text") | .text | strings | {n: $n, t: .}]
+              .b += [$c[] | select(.type? == "text") | .text | strings | {n: $n, t: .[0:$cap]}]
               | (if any($c[]; .type? == "tool_use") then .lt = $n else . end)
               | (if $tid != "" and any($c[]; .type? == "tool_use" and .id? == $tid) then .tl = $n else . end)
             else . end

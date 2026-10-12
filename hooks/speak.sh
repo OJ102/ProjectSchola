@@ -24,15 +24,15 @@ if [ -n "$SCAN" ]; then
   # After a voiced quiz (marker set this turn): every block past the marker. Otherwise: the closing reply,
   # i.e. blocks after the last tool call. last_assistant_message is added when the transcript doesn't end
   # with it yet (not flushed), and skipped when it is the already-voiced last block.
-  MSG=$(jq -rn --argjson s "$SCAN" --arg m "$(speak_marker)" --arg lam "$LAM" '
-    ($m | tonumber? // null) as $m0
+  MSG=$(jq -r --arg m "$(speak_marker)" --arg lam "$LAM" '
+    . as $s | ($m | tonumber? // null) as $m0
     | (if $m0 != null and $m0 >= $s.start then $m0 else null end) as $mk
     | (if $mk != null then [$s.b[] | select(.n > $mk)] else [$s.b[] | select($s.lt == null or .n > $s.lt)] end)
     | [.[].t] as $texts
     | ($s.b | last) as $lastb
     | (if $lam == "" or ($lastb != null and $lastb.t == $lam) then $texts else $texts + [$lam] end)
-    | join("\n\n")' 2>/dev/null)
-  [ -f "$SPOKEN_FILE" ] && speak_set_marker "$(jq -rn --argjson s "$SCAN" '$s.n')"
+    | join("\n\n")' <<<"$SCAN" 2>/dev/null)
+  [ -f "$SPOKEN_FILE" ] && speak_set_marker "$(jq -r '.n' <<<"$SCAN")"
 else
   MSG="$LAM"
 fi
