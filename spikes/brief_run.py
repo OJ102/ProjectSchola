@@ -15,7 +15,9 @@ librarian runs with cwd = the store, SCHOLA_STORE set, and a session settings
 file that installs hooks/source-librarian-guard.sh as a PreToolUse hook on
 Read|Grep|Glob and denies Bash, Write, Edit, web tools and secret paths.
 (Hooks in agent frontmatter did not fire under `claude -p --agent` in 2.1.296,
-so the runner owns the hook.)
+so the runner owns the hook.) The librarian prompt lives in
+spikes/librarian-prompt.md and is passed as an inline --agents definition; it
+is not shipped as a plugin agent (decision 25).
 """
 import json
 import os
@@ -32,6 +34,7 @@ sys.path.insert(0, HERE)
 import source_verify as sv  # noqa: E402
 
 GUARD = os.path.join(ROOT, "hooks", "source-librarian-guard.sh")
+PROMPT = os.path.join(HERE, "librarian-prompt.md")
 DENY = ["Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.config/**)", "Read(~/.gnupg/**)", "Read(**/.env)",
         "Read(**/.env.*)", "Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "mcp__*"]
 
@@ -46,11 +49,16 @@ def settings_file():
 
 
 def claude(prompt, store, resume=None, model=None):
-    cmd = ["claude", "-p", "--plugin-dir", ROOT, "--agent", "learn-voice-teacher:librarian",
+    # decision 25: the librarian is not a plugin agent; it exists only as this
+    # inline --agents definition, so nothing can delegate to it unconfined
+    agent = {"librarian": {"description": "Source-mode librarian (runner-only).",
+                           "prompt": open(PROMPT, encoding="utf-8").read(),
+                           "tools": ["Read", "Grep", "Glob"], "model": "sonnet"}}
+    cmd = ["claude", "-p", "--plugin-dir", ROOT, "--agents", json.dumps(agent), "--agent", "librarian",
            "--settings", settings_file(), "--output-format", "json",
            # pin the toolset and permission mode so neither the agent file nor
            # the user's defaults or MCP servers can widen it
-           "--tools", "Read", "Grep", "Glob", "--strict-mcp-config", "--permission-mode", "default",
+           "--tools", "Read,Grep,Glob", "--strict-mcp-config", "--permission-mode", "default",
            "--allowedTools", "Read", "Grep", "Glob"]
     if model:
         cmd += ["--model", model]
@@ -145,7 +153,10 @@ def main():
     if os.path.realpath(unit) != inside:
         shutil.copy(unit, inside)
     where = open(unit, encoding="utf-8").readline().replace("# Unit source:", "").strip()
+    units = sorted(os.path.splitext(f)[0] for f in os.listdir(os.path.join(store, "units")) if f.endswith(".md")
+                   and f != os.path.basename(unit))
     prompt = (f"Write the unit brief for the unit file {inside}. Follow your brief format exactly. "
+              f"Unit ids you may name as 'Earlier unit:': {', '.join(units) or '(none)'}. "
               f"Output only the brief.")
     runs = [claude(prompt, store, model=model)]
     attempts = []

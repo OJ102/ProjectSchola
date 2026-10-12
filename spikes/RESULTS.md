@@ -365,3 +365,20 @@ All the HIGHs below are fixed and re-run against the reporters' own repro script
   - Candle: **partial**. 3 items still cited `ch13.25` for words that are in `ch13.23`. The gate dropped them and listed them in `verify.json`, as decision 17 intends. 30 verified cites are kept.
   - forge_check on all three: LEAKS 0.
 - **Accepted limit, unchanged:** `extra_claim_on_line` (a true quote plus an extra unsupported clause on the same line) passes. This is the entailment gap that decision 12's fact-checker covers; it is not prototyped.
+
+### Decisions 22–28 applied (lead's rulings on round 5)
+- **22:** exact anchors align to real token boundaries; joiners (`- − / + ±`, dots inside numbers, apostrophes, letters, digits) may not touch either end. A spaced range after a number ("3 – 5") is also refused.
+- **23 and 27:** fuzzy mode tolerates only stopword or filler insertions and deletions, punctuation, plural/possessive forms, US/UK spellings and digit↔number-word. Variants are canonicalized before the ratio, so "color"/"colour" scores 1.0. No other content-word substitution passes.
+- **24 and 28:** no uncited assertions anywhere.
+  - Prerequisites are `Earlier unit: <unit-id>` (checked against the store's `units/`) or `Assumes: <≤10 words, no digits>`.
+  - Further reading entries carry a cite.
+  - Source caveats are only `[unclear|ocr-uncertain|injection-flagged] <span-id>`, with an id from the unit.
+  - The gate accepts the runner's single `<!-- status: … -->` cache line.
+- **25:** `agents/librarian.md` is deleted. The prompt lives in `spikes/librarian-prompt.md` and is passed as an inline `--agents` definition by `brief_run.py`. The runner pins `--tools Read,Grep,Glob --strict-mcp-config --permission-mode default`, installs the guard hook through `--settings`, and denies `mcp__*`. The plugin `Agent|Task` block hook stays as an extra layer (28).
+- **26:** `color:transparent`, `height`/`width:0` (and their max-) with `overflow:hidden`, a later `display:block` override and @media print are handled. The descendant/attribute selector and CSS escape support I'd already written stays in `hidden.py`; its formal tests are deferred to increment 5, as ruled.
+- **Live briefs under the final contract** (`spikes/out/briefs3`, inline agent):
+  - AIE Post-Training: verified first try, 37 cites, ~2.3k tokens.
+  - Lecture: verified first try, 14 cites.
+  - Candle Lecture III: partial, 26 cites kept, 1 item dropped for a non-verbatim anchor.
+  - forge_check on all three: LEAKS 0.
+- `bash tests/spikes.sh`: 191 passed, 0 failed, 1 skipped (network). `claude plugin validate .` passes.

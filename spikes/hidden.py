@@ -2,7 +2,7 @@
 
 Dropped: the `hidden` attribute; aria-hidden="true" (any case); hidden
 inputs; inline styles with display:none, visibility:hidden|collapse,
-font-size:0, opacity:0, color:transparent, height:0 with overflow:hidden,
+font-size:0, opacity:0, color:transparent, height/width:0 with overflow:hidden,
 text colour equal to the background (best effort), off-screen positioning
 (left/top/text-indent <= -999px, best effort); and the same declarations
 reached through the page's own CSS (<style> blocks, EPUB CSS files).
@@ -55,7 +55,8 @@ def effect(decls, cls=""):
         hide = True
     if props.get("color") == "transparent":
         hide = True
-    if re.fullmatch(r"0(px)?", props.get("height", "x")) and props.get("overflow") == "hidden":
+    if props.get("overflow") == "hidden" and any(re.fullmatch(r"0(\.0+)?(px|em|rem|%)?", props.get(k, "x"))
+                                                 for k in ("height", "width", "max-height", "max-width")):
         hide = True
     fg, bg = props.get("color"), props.get("background-color", props.get("background"))
     if fg and bg and _colour(fg) and _colour(fg) == _colour(bg):

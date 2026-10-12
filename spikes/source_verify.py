@@ -45,9 +45,13 @@ SCHEMA = ["Where", "Core claims", "Definitions", "Key figures", "Equations", "Ex
 # Every section except Where and Prerequisites carries source claims and needs
 # cites (round 5: claims were smuggled into Further reading / Source caveats).
 CLAIM_SECTIONS = {"Core claims", "Definitions", "Key figures", "Equations", "Examples", "Quiz seeds",
-                  "Further reading", "Source caveats"}
-# Prerequisites hold outside knowledge only, in a fixed, visibly non-source form
-PREREQ_ITEM = re.compile(r"^- (Assumes|Earlier unit): \S")
+                  "Further reading"}
+# Fixed forms (decisions 24/28): Prerequisites are "Earlier unit: <unit-id>"
+# or "Assumes: <= 10 words, no digits>"; Source caveats are a tag plus a span id
+# from the unit, nothing else.
+PREREQ_UNIT = re.compile(r"^- Earlier unit: ([a-z0-9][a-z0-9-]{0,59})$")
+PREREQ_ASSUMES = re.compile(r"^- Assumes: ([^\d\[\]]+)$")
+CAVEAT = re.compile(r"^- \[(unclear|ocr-uncertain|injection-flagged)\] (\S+)$")
 REQUIRED = {"Core claims", "Quiz seeds"}
 NOISY_KINDS = {"cue", "ocr"}
 MIN_WORDS, MIN_CHARS, MAX_WORDS = 6, 30, 25
@@ -80,6 +84,20 @@ def load_spans(store):
     return {s["id"]: s for s in spans}, [s["id"] for s in spans]
 
 
+def _canon(w):
+    """Collapse inflection and British/American spelling, nothing else."""
+    for suf in ("'s", "es", "s"):
+        if w.endswith(suf) and len(w) > len(suf) + 2:
+            w = w[:-len(suf)]
+            break
+    w = re.sub(r"our\b", "or", w)
+    w = re.sub(r"is(e|ed|ing|ation)$", r"iz\1", w)
+    w = re.sub(r"ys(e|ed|ing)$", r"yz\1", w)
+    w = re.sub(r"tre$", "ter", w)
+    w = re.sub(r"ll(ed|ing|er)$", r"l\1", w)
+    return w
+
+
 def ntoks(t):
     """Word tokens for fuzzy comparison: number words become digits, n't
     splits off, punctuation is dropped."""
@@ -91,7 +109,8 @@ def ntoks(t):
             out += [w[:-3], "not"]
         else:
             out.append(NUMBER_WORDS.get(w, w))
-    return out
+    # allowed variants (plural/possessive, US/UK spelling) compare equal
+    return [w if protected(w) else _canon(w) for w in out]
 
 
 def protected(t):
@@ -114,20 +133,6 @@ def edit_distance(a, b):
             cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] != b[j - 1]))
         prev = cur
     return prev[-1]
-
-
-def _canon(w):
-    """Collapse inflection and British/American spelling, nothing else."""
-    for suf in ("'s", "es", "s"):
-        if w.endswith(suf) and len(w) > len(suf) + 2:
-            w = w[:-len(suf)]
-            break
-    w = re.sub(r"our\b", "or", w)
-    w = re.sub(r"is(e|ed|ing|ation)$", r"iz\1", w)
-    w = re.sub(r"ys(e|ed|ing)$", r"yz\1", w)
-    w = re.sub(r"tre$", "ter", w)
-    w = re.sub(r"ll(ed|ing|er)$", r"l\1", w)
-    return w
 
 
 def spelling_variant(x, y):
@@ -227,6 +232,8 @@ def check_cite(sid, anchor, spans, order, allowed):
 
 def verify(store, brief_path, allow_files, where=None, text=None):
     spans, order = load_spans(store)
+    udir = os.path.join(store, "units")
+    units = {os.path.splitext(f)[0] for f in os.listdir(udir) if f.endswith(".md")} if os.path.isdir(udir) else None
     allowed = None
     if allow_files:
         allowed = set()
@@ -239,6 +246,8 @@ def verify(store, brief_path, allow_files, where=None, text=None):
     for ln_no, line in enumerate(text.split("\n"), 1):
         if not line.strip():
             continue
+        if ln_no == 1 and re.fullmatch(r"<!-- status: (verified|partial)\b[^<>]*-->", line.strip()):
+            continue  # cache status line written by the brief runner
         h = re.match(r"^\s*#", line)
         if h:
             m = re.fullmatch(r"## (.+)", line.rstrip())
@@ -269,10 +278,20 @@ def verify(store, brief_path, allow_files, where=None, text=None):
         if not re.match(item_re, line):
             failures.append({"line": ln_no, "reason": f"not a schema item in {section}"})
         if section == "Prerequisites":
-            if not PREREQ_ITEM.match(line):
-                failures.append({"line": ln_no, "reason": "Prerequisites items must start 'Assumes:' or 'Earlier unit:'"})
-            if CITE.search(line):
-                failures.append({"line": ln_no, "reason": "cite in Prerequisites (outside knowledge only)"})
+            mu, ma = PREREQ_UNIT.match(line.rstrip()), PREREQ_ASSUMES.match(line.rstrip())
+            if mu:
+                if units is not None and mu.group(1) not in units:
+                    failures.append({"line": ln_no, "reason": f"unknown unit id: {mu.group(1)}"})
+            elif not (ma and len(ma.group(1).split()) <= 10):
+                failures.append({"line": ln_no, "reason": "Prerequisites: 'Earlier unit: <unit-id>' or 'Assumes: <=10 words, no digits'"})
+            continue
+        if section == "Source caveats":
+            mc = CAVEAT.match(line.rstrip())
+            if not mc:
+                failures.append({"line": ln_no, "reason": "Source caveats: '[unclear|ocr-uncertain|injection-flagged] <span-id>' only"})
+            elif mc.group(2) not in spans or (allowed is not None and mc.group(2) not in allowed):
+                failures.append({"line": ln_no, "id": mc.group(2), "reason": "caveat span id not in the unit"})
+            continue
         found = CITE.findall(line)
         if len(BARE_CITE.findall(line)) > len(found):
             failures.append({"line": ln_no, "reason": "malformed cite"})
