@@ -53,7 +53,7 @@ python3 spikes/ocr_compare.py --methods tesseract,applevision,docling,vision
   - In the pipeline, the vision call should go through a small dedicated agent that batches several assets per call (≤20 images per Read limit).
   - The cost is lazy: *AI Engineering* has about 229 figures × ~2k ≈ 460k tokens if every figure were described. About 5 figures per unit means ~10k tokens per unit, paid once and cached in `vision/`.
 - **B, Docling:**
-  - 1.4 GB venv, plus **593 MB of models in `~/.cache/huggingface`**, outside the venv.
+  - 1.4 GB venv (`.spike-venv`, which includes rapidocr's ONNX models under `site-packages/rapidocr/models/`). **Correction:** I earlier reported 593 MB of new models in `~/.cache/huggingface`. File birth times show those models were already there from 2026-06-24, before this spike; Docling reused them and only updated directory mtimes. The paths are `~/.cache/huggingface/hub/models--docling-project--docling-layout-heron` (164 MB) and `~/.cache/huggingface/hub/models--docling-project--docling-models` (342 MB), plus their `.locks/` entries. **This spike created no new files outside `.spike-venv`.**
   - 6–34 s CPU per page after an 80 s cold start.
   - Formula decoding needs the separate CodeFormula model, not tested (another large download; ask before installing).
 - **D and tesseract:** free, local, under 1.5 s per page.
@@ -211,12 +211,12 @@ Script: `/teach` the AI Engineering Post-Training unit, then one learner answer,
 | Other tool results | AskUserQuestion 39 |
 | Context per API call | about 41–43k tokens. This is almost all the Claude Code system prompt, tools, plugin skills and the teach skill. Turns with tool use report 85–114k because the per-invocation usage sums several API calls. |
 | Tutor citations | 8 `[[cite:id]]`, 0 ids outside the brief or lookup |
-| Tutor quote check | 1 mismatch caught: a correct quote from p0108.8, cited to p0109.1 (the brief's nearest id). The checker finds the span that really holds the quote (`repoint_to: p0108.8`). |
+| Tutor quote check | **Correction:** the "1 mismatch" I first reported (p0109.1 → p0108.8) was a false positive in my first checker, which matched any quote within 300 chars. The tutor had in fact cited that quote correctly, as `[[cite:p0108.8 "…"]]`. The rewritten checker (quote must end right before its cite) finds 0 mismatches in this run. Tester's crafted cases (re-pointed quote, fabricated quote, quotes containing `]]` or newlines, forged anchors inside tutor cites) all behave correctly. |
 | Cost / time | $0.18 for the 5-turn session (sonnet), 5–10 s per turn |
 
 ### Findings that change the design
 1. **Grep lookups must return span ids.** In the first run, segments stored `<!-- id -->` on a separate line, so a Grep hit had no id. The tutor guessed the neighbouring brief id and rendered "p. 79" for a sentence on p. 78. Segments now hold one span per line, `[p0102.7] text`. On the rerun, the lookup cited correctly (p. 78).
-2. **Tutor cites need a quote check, not just an id allow-list.** The id allow-list (plan §4) passed all 8 cites, but one carried a quote from a different span. The Stop-hook check (`source-cite-check.sh`) should:
+2. **Tutor cites need a quote check, not just an id allow-list.** The real run had no mis-quote (see the correction above), but the id allow-list alone can't catch one, and tester's crafted replies show the gap. The Stop-hook check (`source-cite-check.sh`) should:
    - verify any quotation placed right before a cite against the cited span;
    - re-point it deterministically when the quote is found in another span of the unit or the lookup set;
    - otherwise strip it.
@@ -253,7 +253,7 @@ python3 spikes/fetch.py <url> spikes/out/web/x.html && python3 spikes/readabilit
 | dev.to "JavaScript Visualized: Event Loop" | Forem | full body; comments, billboards and actions removed | article | 759 | 0/1 | cover image and avatar line |
 | medium.com/@karpathy "Software 2.0" | Medium | **fetch refused: HTTP 403** (bot wall) | – | – | – | clean failure → lossy WebFetch fallback per the plan |
 | x.com/karpathy | JS app | **`js_required`, exit 3** | – | 0 | – | clean failure, no guessing |
-| `tests/fixtures/blog.html` | synthetic | exact article only; nav, ads, cookie, sidebar, share, newsletter, comments and related all removed | article | 113 | 2/3 | none; the injection paragraph is kept as data, and pandoc escapes its `[[cite:` as `\[\[cite:` |
+| `tests/fixtures/blog.html` | synthetic | exact article only; nav, ads, cookie, sidebar, share, newsletter, comments and related all removed | article | 113 | 2/3 | none; the injection paragraph is kept as data. Pandoc escapes `[[cite:` in prose but not in code blocks, so the extractor now neutralizes `[[` / `]]` itself (see below) |
 
 **Score: 6/6 readable articles have their main content right**, with ≤40 words of boilerplate in the worst case. 2/2 unreadable pages fail cleanly.
 
@@ -261,8 +261,83 @@ python3 spikes/fetch.py <url> spikes/out/web/x.html && python3 spikes/readabilit
 - Use the stdlib heuristic as the default; no Docling or readability dependency is needed for articles. Apply the `NEG` rule on element ids unconditionally (a `class="section text-…"` once rescued dev.to's comments).
 - Headings without ids get `URL § heading` locators (plan). Sphinx-style `section[id]` ids are moved onto the heading.
 - A 403/429 from a bot wall (Medium) is a fetch failure, not an extraction failure. Report it and offer the WebFetch fallback marked `lossy`.
-- Span storage must neutralize literal `[[cite:` in source text. The verifier already rejects anchors containing `[[`.
+- Span storage neutralizes literal `[[` / `]]` for every source type, code blocks included (`srcnorm.neutralize`, inserting U+2060). This is part of the adapter contract. The verifier also rejects anchors containing `[[`.
 
 ### Open risks
 - Byline and meta lines leak a few words on WordPress and Substack; harmless for teaching, but they become spans. A post-filter for short spans at the top (date/author patterns) would remove them.
 - Paywalled teasers (Substack paid posts) would extract the teaser as if it were the article. Detect a `paywall` class or a "subscribe to read" marker and report it (untested; no paid post available).
+
+
+## Fixes after the review rounds (tester and adversary-2, 2026-10-12)
+
+All the HIGHs below are fixed and re-run against the reporters' own repro scripts.
+
+### 0c gate (`spikes/source_verify.py`, `spikes/srcnorm.py`)
+- **Decision 13:** anchors match as normalized *token sequences* (`srcnorm.find_tokens`), so "12 percent" doesn't match inside "112 percent", "safe" inside "unsafe", or "ides" inside "Tides". Punctuation is its own token.
+- **Decision 16:**
+  - number words become digits;
+  - protected tokens must match exactly: negations (including n't), numbers, units, comparatives, multiplicatives (once/twice/thrice/double/half…) and likelihood/modal words (likely, may, must, always, often, rarely, all, some, only…);
+  - a substitution that adds or removes un-/in-/im-/ir-/il-/non-/dis-/a- or -less is never noise;
+  - other substitutions must be within edit distance 2, insertions/deletions must be stopwords or fillers, the ratio must be ≥ 0.9, and more than half of the match must lie in the cited cue.
+  - Adversary-2's fuzzy_un_prefix, fuzzy_numword, fuzzy_twice and fuzzy_unlikely are rejected; fuzzy_ok_noise (document/documents) passes.
+- **Decision 17 (strict schema):**
+  - exact `## ` headings from a fixed list, in order, each at most once; Core claims and Quiz seeds are required;
+  - every line in a claim section must be a `- ` item (`N. ` under Quiz seeds) with a valid cite;
+  - plain paragraphs, `•` bullets, table rows, bold pseudo-headings, synonyms like "Key claims" and text before the first heading all fail;
+  - `## Where` is a single line, generated by code (`--where` compares it).
+  - The three cached briefs pass the strict schema unchanged.
+- **Partial caching:** `brief_run.py` caches a brief that still fails after its retry only as `partial`. Only verified items are kept, dropped lines are listed in `<unit>.verify.json`, and an uncited plain-paragraph claim is dropped, never kept. A brief that fails even after stripping is not cached (`rejected`).
+- **Decision 1 exception:** an anchor equal to a whole short span ("No.") passes even if it's all stopwords.
+- **Self-written locators:** `12:30` (m:ss and mm:ss) and `pg. 12` are now rejected too.
+- **Rendering:** `--render` quotes the *source span text* (the matched substring), never the model's anchor, and strips bidi, zero-width and control characters. Fuzzy cites render with a `[fuzzy]` marker. Bidi isolates (U+2066–2069) and U+061C were added to the invisible set.
+
+### Decision 15: librarian confinement, verified live
+- `hooks/source-librarian-guard.sh` allows Read, Grep and Glob only inside `$SCHOLA_STORE`. It resolves realpaths and follows `..`, `~` and absolute Glob patterns; anything else is denied.
+- `brief_run.py` installs the guard through a session `--settings` file, with deny rules for Bash, Write, Edit, the web tools, Agent and secret paths. It runs the librarian with cwd = the store and copies the unit file into `<store>/units/`.
+- Live `claude -p` probe: reading `README.md` outside the store was blocked by the hook ("outside the source store; denied"), and reading `segments/p0102.md` inside it worked.
+- **Finding:** a `hooks:` block in the agent's frontmatter did *not* fire under `claude -p --agent` (2.1.296). The README read succeeded with it in place, so the runner owns the hook.
+
+### 0d tutor check (`spikes/dryrun.py`, `check_reply`)
+- A quotation right before a cite (it may contain `]]` or newlines) must be found, as tokens, in the cited span.
+  - If it's found in another span, the cite renders at that span's locator (re-pointed).
+  - If it's found nowhere, the cite renders as "(citation removed: quote not found in the source)".
+- An anchor inside a tutor cite is verified with the full gate.
+- Tester's dryrun suite: 14/14.
+
+### 0b (`spikes/pagelabels.py`, `spikes/locators.py`, `spikes/locators_other.py`)
+- **Decision 14 (outliers):** short runs (1–2 footered pages) between two agreeing runs are corrected, and arabic points that no other page in the window supports are dropped before runs form. Both are listed in `labels.json` `footer_outliers`. `label_conflict` applies only above 2% after that.
+- **Dictionary vs footers:** a footer that agrees with its run beats `/PageLabels` on its own page. The fit beats a dictionary label that breaks a run it interpolates through (the `999` on chapter openers). Both are listed in `dict_overridden`.
+- All `pdf_index` values in the store are 1-based, `outline.json` included.
+- Spans whose label occurs on several pages carry `locator_ambiguous` and `section`.
+- New label shapes: `N/M` footers, `A1` appendix labels, and a lone roman front-matter page (kept when its value fits its position).
+- Candidate scoring is indexed: 20,000 pages fit in 0.8 s (previously 18 s).
+- pdfmini has a 256 MB total-inflate budget; the adversary's 5 MB file drops from 805 MB to 383 MB RSS.
+- **Fixtures:** new `tests/fixtures/book20-lying.pdf` (24 pages, no dictionary, page 12 prints 99) gives 1..24 with `footer_outliers` = PDF 12. Adversary-2's fit cases: 12/13 pass. The remaining one is `two_up_spread`, a low (two printed pages per scanned sheet), not handled.
+- **EPUB (HIGH fixed):**
+  - text in `div`/`section`/`span` and in unclosed `<p>` is kept;
+  - a stray `</style>` is ignored;
+  - hidden content is dropped (decision 11, including the EPUB's own CSS files);
+  - zip entries are capped at 64 MB each and 512 MB total, and a compression ratio over 200 is refused;
+  - bad containers and non-zips fail with a one-line error;
+  - pagebreak ids such as `pgxii` give `xii`, and a span takes the page it starts on;
+  - `report.json` gives captured vs body characters. The Gutenberg EPUB went from 285 to 369 spans: 84 paragraphs had been silently dropped. Capture is now 99.8%.
+- EPUB locators use the decided form `Chapter § heading ¶n`; `›` is used only in outline paths.
+- **VTT:** chapters are `hh:mm:ss` with the trailing period trimmed. Deep links are built with urllib (http/https only, `t` in the query, fragment kept). Cues with minutes or seconds above 59 are rejected.
+
+### 0e (`spikes/fetch.py`, `spikes/readability.py`, `spikes/hidden.py`)
+- **SSRF (HIGH fixed):** IPv4 literals must be canonical dotted decimal. `0177.0.0.1`, `0x7f.0.0.1`, `2130706433`, `127.1` and `012.0.0.1` are refused before curl sees them. Hostnames are still resolved, checked and pinned with `--resolve`.
+- **Hidden text (HIGH fixed, decision 11):** dropped:
+  - the `hidden` attribute and `aria-hidden` (any case);
+  - `display:none` and `visibility:hidden|collapse` (any spacing, `!important`);
+  - `font-size:0`, `opacity:0`, same-colour text and off-screen positioning;
+  - the same rules reached through the page's own `<style>` selectors.
+  Screen-reader-only text is kept, as ruled. Adversary-2's suite has 7 leaks left, all accepted: sr-only ×3, img alt, a title, closed `<details>`, and white text on an assumed white body.
+- More than 64 KB of headers no longer crashes: blocks are parsed fully, with a 1 MB cap.
+- Charsets: an allowlist (UTF-8/16/32, Latin-1, cp125x, iso-8859-x, CJK, KOI8); anything else (idna, utf-7, unicode_escape, punycode, bogus) is decoded as UTF-8 with replacement.
+- The extractor has a 30 s wall clock (exit 4, `too_slow`).
+
+### Adapter contract additions (for increment 1)
+- Span text never contains a literal `[[` or `]]`: neutralize at storage.
+- `pdf_index` and all page indices are 1-based.
+- Adapters report captured vs total text where the format allows, so silent loss is visible.
+- Hidden content never becomes spans.
