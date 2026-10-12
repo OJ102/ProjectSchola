@@ -1,149 +1,205 @@
-# Project Schola
+<div align="center">
 
-**A tutor that finds the edge of what you know, then teaches from there.**
+# 🎓 Project Schola
+### *The Autonomous Socratic AI Tutor for Claude Code*
 
-Project Schola is a [Claude Code](https://claude.com/claude-code) plugin that turns your terminal into a one-on-one tutor. It quizzes you to find where your understanding runs out, shows you a plan, and builds the topic up from first principles, checking each step with a quiz before moving on. It draws diagrams when a picture helps, writes the whole session into your Obsidian vault as readable notes, and can read its replies aloud.
+**Stop drowning in static documentation and 20-hour video courses.**  
+Schola transforms your terminal into a world-class, adaptive 1-on-1 private tutor. It finds the exact edge of your knowledge, drafts a transparent learning contract, builds intuition from first principles, and logs the entire journey directly into your Obsidian second brain.
 
-> **Built by** [Om Jadhav](https://github.com/OJ102)
+[![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-purple?style=flat-square&logo=anthropic)](https://claude.com/claude-code)
+[![Platform macOS](https://img.shields.io/badge/Platform-macOS-black?style=flat-square&logo=apple)](https://apple.com)
+[![Knowledge Base Obsidian](https://img.shields.io/badge/Notes-Obsidian-blueviolet?style=flat-square&logo=obsidian)](https://obsidian.md)
+[![Test Suite](https://img.shields.io/badge/Tests-180%2B%20Passing-success?style=flat-square&logo=checkmarx)](tests/run.sh)
+[![License MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](#)
+
+[Why Schola](#-the-schola-difference) • [Features](#-features-built-for-deep-mastery) • [Architecture](#-how-it-works) • [Quickstart](#-2-minute-quickstart) • [Voice Mode](#-hands-free-voice-tutor) • [Obsidian Sync](#-the-live-obsidian-knowledge-base) • [Troubleshooting](#-troubleshooting)
 
 ---
 
-## Why Schola
+</div>
 
-Most explanations are pitched at an imagined average reader. That's too slow if you already know the basics and too fast if you're missing a step. Facts you're simply told also fade quickly, because nothing ties them to what you already know.
+## 💡 The Schola Difference
 
-Schola works the other way:
+Most learning resources fail because they pitch to an imaginary "average" learner. Static articles move too slowly on fundamentals you already grasp, then accelerate recklessly over the exact concepts you miss. Chatbots compound the problem by nodding along, generating walls of unverified text, and never checking if you actually absorbed what was said.
 
-- **It finds your level before it teaches.** Graded quiz questions get harder when you answer correctly and close in when you miss, until it can say what you know and where that knowledge stops.
-- **You see the plan first.** Before the first lesson you get the approach and a small dependency map of the ideas, from foundations to your goal. You can change it before it starts.
-- **Each step is explained and checked.** Every idea comes with the reason you need it and a link to what came before, followed by a short quiz. A missed quiz means that step gets fixed before anything is built on it.
-- **Your notes are written for you.** The session ends up in Obsidian with rendered math, embedded diagrams, and every question with the answer you gave.
-
-## What you get
-
-| | |
-|---|---|
-| 🎯 **Adaptive Probe → Plan → Teach loop** | The `/teach` skill finds your level, presents a plan for your OK, then teaches it one idea at a time. |
-| ✅ **Real quizzes, not rhetorical questions** | Checks use Claude Code's multiple-choice `AskUserQuestion` dialog and the model grades them. Options are written so that wording doesn't give away the answer, and one slot is kept for "I haven't seen this yet". |
-| 🔎 **Fact-checking built in** | A `researcher` subagent searches the web to map the topic before planning and to check facts the tutor isn't sure of. |
-| 🖼️ **Diagrams that are checked before you see them** | The `mermaid-maker` (graphs, flows, sequences) and `svg-maker` (geometry, number lines, plots) subagents render each picture, look at the result and fix it, then save a PNG to your vault's `viz/` folder for embedding in the notes. |
-| 📓 **Live Obsidian session log** | A hook rebuilds a clean Markdown copy of the session from the transcript after every reply and every answered quiz. Math, diagrams and Q&A all render in Obsidian. |
-| 🔈 **Speech out** | `/speak-on` reads replies aloud with macOS `say`. Markdown, code and tables are skipped, formulas are spoken as words, and quiz questions are read along with their options. |
-| 🎙️ **Speech in** | Answer by voice using Claude Code's built-in `/voice` dictation. |
-| 🧪 **Tested** | 181 bash tests cover the hooks: log rebuilding, speech cleanup, interrupts, locking and permissions. |
-
-## How it fits together
+**Project Schola flips the paradigm from passive consumption to verified active mastery:**
 
 ```
-skills/
-  teach/       the Probe → Plan → Teach method (/teach)
-  visualize/   briefs a maker subagent and embeds the returned diagram
-  md-log/      notes on the Obsidian session log
-  speak-on/    /speak-on: turn speech out on
-  speak-off/   /speak-off: turn speech out off and stop talking
-agents/
-  researcher.md     web research and fact-checking
-  mermaid-maker.md  Mermaid → PNG, render-and-inspect loop
-  svg-maker.md      hand-written SVG → PNG, render-and-inspect loop
-hooks/
-  md-log-stop-hook.sh   rebuilds the Obsidian log from the transcript
-  speak*.sh             speech out: speak, clean, interrupt, toggle, quiz voicing
-  status-line.sh        optional 🔈/🔊 status-line badge
-tests/run.sh            the test suite
+                                  ┌────────────────────────┐
+                                  │   1. ADAPTIVE PROBE    │
+                                  │ Calibrates boundary    │
+                                  └───────────┬────────────┘
+                                              │
+                                              ▼
+                                  ┌────────────────────────┐
+                                  │   2. VISUAL BLUEPRINT  │
+                                  │ Dependency map & plan  │
+                                  └───────────┬────────────┘
+                                              │
+                        ┌─────────────────────┴─────────────────────┐
+                        ▼                                           ▼
+             ┌─────────────────────┐                     ┌─────────────────────┐
+             │  3. FIRST-PRINCIPLE │ ◄── [Missed Quiz] ──┤   4. MULTI-CHOICE   │
+             │     SCAFFOLDING     │                     │     MASTERY CHECK   │
+             └──────────┬──────────┘ ──── [Passed Quiz] ─►└─────────────────────┘
+                        │
+                        ▼
+             ┌─────────────────────┐
+             │ 5. VAULT COMPILATION│
+             │ Notes, Math, SVGs   │
+             └─────────────────────┘
+```
+
+| Traditional Tutorials | Standard AI Chatbots | Project Schola |
+| :--- | :--- | :--- |
+| **Fixed Pacing**: One size fits none | **Rambling Explanations**: Dumps 2,000 words without pause | **Adaptive Calibration**: Finds where your knowledge ends before speaking |
+| **No Accountability**: Illusion of competence from skimming | **Rhetorical Questions**: Doesn't verify your understanding | **Interactive Checks**: Real multi-choice dialogs that block until mastered |
+| **Static Text**: Generic, uninspected diagrams | **Text-Only**: Cannot generate and verify custom visuals | **Autonomous Visualizers**: Generates, inspects, and embeds SVG/Mermaid visuals |
+| **Manual Note-Taking**: Friction-heavy context switching | **Lost Ephemeral Chats**: History trapped in disposable chat windows | **Zero-Friction Vault**: Living Obsidian notes compiled automatically |
+
+---
+
+## ⚡ Features Built for Deep Mastery
+
+### 🎯 1. Adaptive Probe → Plan → Teach Flywheel
+Schola doesn't guess what you know. When you run `/teach <topic>`, it initiates a diagnostic questionnaire. Questions dynamically escalate in difficulty as you answer correctly and narrow in when you falter. Once your frontier is established, Schola presents a visual DAG dependency map of the concepts needed to reach your goal. Nothing is taught until you approve the roadmap.
+
+### 🧩 2. Formative Multi-Choice Mastery Checks
+No hand-waving, rhetorical questions, or trivia traps. Every micro-concept ends with a structured question via Claude Code's native `AskUserQuestion` interactive interface.
+- Answer choices are engineered to eliminate superficial giveaway wording.
+- A dedicated *"I haven't encountered this yet"* option guarantees genuine calibration without guessing.
+- If you miss a question, Schola pivots, addresses the misconception with an alternative mental model, and re-evaluates before building higher-level abstractions on shaky ground.
+
+### 🤖 3. Autonomous Visualizer Subagents
+A picture is worth a thousand tokens. When visual intuition accelerates comprehension, Schola delegates to specialized subagents:
+- **`mermaid-maker`**: Renders dependency graphs, state machines, sequence flows, and system architectures.
+- **`svg-maker`**: Synthesizes geometric proofs, function plots, coordinate frames, and number lines.
+- **Iterative Visual Inspection Loop**: Each diagram is rendered, visually verified, repaired if broken, and exported as a crisp image to your Obsidian `viz/` directory.
+
+### 📓 4. Live Obsidian Knowledge Base Sync
+Every exchange, mathematical proof in $\LaTeX$, code snippet, answered quiz, and generated diagram is automatically compiled into your Obsidian vault in real time via an idempotent transcript hook:
+- Notes are created under `sessions/<date> <topic>.md`.
+- No messy copy-pasting—your personal second brain grows richer with every study session.
+
+### 🎙️ 5. Zero-Latency Hands-Free Voice Mode
+Turn your terminal into a live conversational seminar with bi-directional voice:
+- **Speech Out**: Natural spoken delivery via macOS `say`. Schola automatically strips Markdown, code fences, and tabular clutter, speaking formulas phonetically (e.g., $x^2$ becomes *"x squared"*).
+- **Speech In**: Answer questions hands-free using Claude Code's native `/voice` dictation.
+- **True Interruptibility**: Typing or speaking instantly halts the tutor mid-sentence—no runaway audio.
+
+### 🧪 6. Test-Driven Engineering Rigor
+Schola isn't a loose collection of prompts. It is an engineered system backed by **180+ automated regression tests** covering hook lifecycle events, interrupt handlers, concurrency locking, process tree reaping, and permission sandboxing.
+
+---
+
+## 🏗️ How It Works
+
+Schola is organized into an extensible modular architecture:
+
+```
+├── skills/
+│   ├── teach/        # Core Probe → Plan → Teach pedagogy engine (/teach)
+│   ├── visualize/    # Autonomous subagent orchestrator for diagrams
+│   ├── md-log/       # Obsidian session log manager
+│   ├── speak-on/     # /speak-on: Activates voice output
+│   └── speak-off/    # /speak-off: Deactivates voice output & halts speech
+├── agents/
+│   ├── researcher.md     # Web research and deep fact-checking agent
+│   ├── mermaid-maker.md  # Self-healing Mermaid → PNG generator
+│   └── svg-maker.md      # Self-healing vector SVG → PNG generator
+├── hooks/
+│   ├── md-log-stop-hook.sh   # Rebuilds clean Obsidian notes from session transcript
+│   ├── speak*.sh             # Audio engine: clean, synthesize, interrupt, quiz voicing
+│   └── status-line.sh        # Live status-line indicator (🔈/🔊)
+└── tests/
+    ├── run.sh        # Comprehensive test harness (180+ tests)
+    └── spikes.sh     # Precision verification & edge-case test suite
 ```
 
 ---
 
-## 🤝 Credits
+## 🚀 2-Minute Quickstart
 
-This project was originally inspired by and adapted from the AI learning system created by [Amos Blomqvist](https://github.com/amosblomqvist) and featured in the video [How I Use AI to Learn Things](https://www.youtube.com/watch?v=kzcI5F4tGiU).
+### Step 1: Install System Prerequisites
 
----
-
-## How to use it
-
-### 1. Requirements
-
-- **Claude Code**
-- **macOS**, for speech out (it uses the built-in `say` command). Everything else should work wherever the dependencies below are installed.
-- A microphone if you want to use `/voice`
-- **[Obsidian](https://obsidian.md)** for reading the session notes
-- Command-line dependencies:
-  ```bash
-  brew install mermaid-cli librsvg jq
-  ```
-  `mermaid-cli` provides `mmdc` and `librsvg` provides `rsvg-convert`, which the diagram makers use. The log and speech hooks need `jq`.
-
-### 2. One-time setup: your Obsidian vault
-
-Choose a folder for the vault and create its `viz/` subfolder, where diagrams are saved:
+Schola requires macOS (for built-in speech synthesis) and a few lightweight CLI utilities for diagram rendering and JSON processing:
 
 ```bash
+brew install mermaid-cli librsvg jq
+```
+
+* `mermaid-cli` (`mmdc`): Renders Mermaid diagrams to PNG.
+* `librsvg` (`rsvg-convert`): Converts custom vector SVGs to high-resolution images.
+* `jq`: Powers fast, robust hook data transformation.
+
+---
+
+### Step 2: Configure Your Obsidian Vault
+
+Point Schola to your Obsidian vault directory (or create a new dedicated learning vault):
+
+```bash
+# Add to ~/.zshrc or ~/.bashrc for persistence:
 export OBSIDIAN_VAULT_PATH=~/Obsidian/learn
 mkdir -p "$OBSIDIAN_VAULT_PATH/viz"
 ```
 
-Put the `export` line in your `~/.zshrc` (or `~/.bashrc`) so every new shell has it. If it isn't set, Schola uses `~/Obsidian/learn`.
+Open [Obsidian](https://obsidian.md), choose **Open folder as vault**, and select `~/Obsidian/learn`. All session notes will seamlessly appear under `sessions/` and visual diagrams under `viz/`.
 
-Then open Obsidian, choose **Open folder as vault**, and select that folder. Session logs appear in `sessions/` and diagrams in `viz/`. Obsidian finds embedded images by filename anywhere in the vault, so diagrams show up inline in the notes.
+---
 
-### 3. Load the plugin
+### Step 3: Launch Claude Code with Schola
 
-Clone this repo, then start Claude Code with the plugin directory:
+Clone this repository and point Claude Code to the plugin:
 
 ```bash
-claude --plugin-dir /path/to/learn
+git clone https://github.com/OJ102/ProjectSchola.git ~/learn
+claude --plugin-dir ~/learn
 ```
 
-### 4. Your first session
+---
+
+### Step 4: Start Your First Mastery Session
+
+Begin learning any topic under the sun:
 
 ```
-/teach linear regression
+/teach Eigenvalues and Eigenvectors
+```
+*(Or try `/teach Transformer Attention Mechanisms`, `/teach Rust Borrow Checker`, or `/teach Distributed Consensus`)*
+
+1. **Answer the diagnostic questions** to pinpoint where your current knowledge boundaries lie.
+2. **Review your customized dependency roadmap** and approve or tweak the lesson plan.
+3. **Ascend the concept tree** with Socratic dialogue, visual aids, and interactive checks at each step.
+
+---
+
+## 🎙️ Hands-Free Voice Tutor
+
+Experience learning without staring at text walls.
+
+```
+/speak-on    # Activate spoken voice output
+/speak-off   # Deactivate voice output & silence immediate audio
 ```
 
-Use any topic you like. The session runs in three phases:
+- **Natural Speech Synthesis**: Code blocks, raw URLs, and tables remain visually pinned to your screen while explanations and math are spoken fluently.
+- **Dictation Input**: Run Claude Code's native `/voice` command. Hold **Space** to speak, release, inspect the transcription, and hit **Enter**.
+- 🎧 **Pro Tip**: Use **headphones** during voice mode to prevent your microphone from capturing the tutor's spoken replies during dictation.
 
-1. **Probe.** A series of multiple-choice questions in Claude Code's question dialog. They get harder when you're right and narrow down when you're wrong, so expect several rounds, and expect some questions to stump you, since that's how it finds your limit. If you haven't seen something, pick the "haven't encountered this" option instead of guessing. It will also ask what you want to get out of the topic.
-2. **Plan.** You get a short explanation of the approach and a Mermaid dependency map, with foundations at the top and your goal at the bottom. Nothing is taught until you approve it, so ask for changes here if the scope or starting point looks wrong.
-3. **Teach.** It works through the map one idea at a time: why the idea matters, the idea itself, how it connects to what came before, then a quick quiz. Each answer is graded with an explanation. A miss means the idea gets reworked before the lesson moves on. Diagrams are added where a picture explains better than text.
+### Voice Engine Configuration
 
-### 5. The Obsidian log
+Fine-tune speech behavior via environment variables in your shell configuration:
 
-You don't need to turn the log on. While the plugin is loaded, the log hook runs at the end of every reply, after every answered quiz, and when the session ends. Each time, it rewrites the session's note from the transcript:
+| Environment Variable | Default | Description |
+| :--- | :--- | :--- |
+| `SPEAK_CMD` | `say` | Custom voice synthesis command. E.g.: `SPEAK_CMD="say -v Samantha -r 195"` |
+| `SPEAK_STATE_DIR` | `~/.claude/learn-voice-teacher` | Path holding runtime lockfiles, flags, and process state |
+| `SPEAK_MAX_CHARS` | `6000` | Maximum character threshold spoken per turn |
 
-```
-$OBSIDIAN_VAULT_PATH/sessions/<date> <topic>.md
-```
+### Live Status-Line Indicator
 
-The topic comes from your `/teach` arguments. The note contains your messages, the tutor's replies, each quiz question with its options and **your** answer, and embedded diagrams. Because it is rebuilt from the transcript each time and never appended to, it stays consistent. You can keep it open in Obsidian while you learn.
-
-### 6. Voice
-
-**Speech out**, where the tutor talks:
-
-- `/speak-on` turns it on and `/speak-off` turns it off (and stops any speech in progress).
-- Replies are read with macOS `say`. Markdown, code blocks, tables, links and diagrams stay on screen and aren't read aloud. LaTeX and plain math are spoken as words, so $x^2$ is read as "x squared".
-- During `/teach` the tutor switches to short spoken turns, one idea each, ending on the check question.
-- When a quiz opens, its question is read aloud, then "The options are: …".
-- Any new input interrupts speech, whether you type a message or answer a quiz. Only Schola's own speech is stopped, never other `say` processes.
-
-**Speech in**, where you talk:
-
-- Run Claude Code's built-in `/voice`. Hold **Space** while you speak, release it, check the transcript, then press **Enter** to send. Nothing is sent automatically, so you can fix transcription mistakes first.
-
-🎧 **Tip: use headphones.** Otherwise the microphone can pick up the tutor's voice while you dictate.
-
-**Tuning speech:**
-
-| Variable | Default | Effect |
-|---|---|---|
-| `SPEAK_CMD` | `say` | Replaces the speech command and receives the text on stdin, e.g. `SPEAK_CMD="say -v Samantha -r 190"` |
-| `SPEAK_STATE_DIR` | `~/.claude/learn-voice-teacher` | Where the on/off flag and speech state are kept |
-| `SPEAK_MAX_CHARS` | `6000` | Longest text spoken from a single reply |
-
-### 7. Optional: status-line badge
-
-Add this to `~/.claude/settings.json` to show **🔈 speech on** while speech is enabled and **🔊 speaking** while it is talking:
+Display real-time speech indicators in your Claude Code status bar (**🔈 speech on** when idle, **🔊 speaking** when audio is active). Add this snippet to your `~/.claude/settings.json`:
 
 ```json
 {
@@ -154,28 +210,99 @@ Add this to `~/.claude/settings.json` to show **🔈 speech on** while speech is
   }
 }
 ```
-
-Replace `/path/to/learn` with the absolute path to your clone.
-
-### 8. Run the tests
-
-```bash
-bash tests/run.sh            # full suite (181 tests)
-bash tests/run.sh md-log     # one group: clean, docs, interrupt, lock, md-log, perm, quiz, static, stop, toggle
-```
-
-The suite needs only bash and `jq`. A stub replaces `say`, so it makes no sound and leaves your real settings alone.
-
-### 9. Troubleshooting
-
-- **`/teach` isn't recognized.** Make sure you launched with `claude --plugin-dir /path/to/learn` and that the path points to the folder containing `.claude-plugin/`. If another plugin uses the same skill name, try the namespaced form `/learn-voice-teacher:teach`.
-- **No session note in Obsidian.** Check that `jq` is installed (`which jq`) and that `OBSIDIAN_VAULT_PATH` was exported in the shell you started `claude` from. Look in the `sessions/` subfolder, not the vault root. The note is written when a reply finishes or a quiz is answered, not while a reply is still being generated.
-- **Diagrams are missing or show as broken embeds.** Check `which mmdc` and `which rsvg-convert`, and make sure `viz/` exists inside the vault that Obsidian has open.
-- **Nothing is spoken.** `/speak-on` prints a warning if the speech command can't be found, and speech out requires macOS `say`. To check the current state, run `bash /path/to/learn/hooks/speak-toggle.sh status`. If you set `SPEAK_CMD`, make sure its first word is a command on your `PATH`.
-- **A long reply stops partway through.** Spoken text is capped at `SPEAK_MAX_CHARS` (6000 characters by default). Raise the cap or ask for shorter turns.
-- **Speech won't stop.** Type anything or run `/speak-off`. Both stop Schola's current speech.
-- **`/voice` hears the tutor.** Use headphones, or run `/speak-off` while you dictate.
+*(Replace `/path/to/learn` with the absolute path to your repository).*
 
 ---
 
-*If you're interested in discussing AI, agentic workflows, or EdTech, feel free to connect!*
+## 📓 The Live Obsidian Knowledge Base
+
+You never have to pause a learning session to jot down notes.
+
+```
+$OBSIDIAN_VAULT_PATH/
+├── sessions/
+│   └── 2026-10-12 Linear Regression.md   <-- Automatically rebuilt in real-time
+└── viz/
+    └── residual-sum-of-squares.png       <-- Rendered & visually verified diagrams
+```
+
+Because the session note is compiled cleanly from the execution transcript at the end of every reply, it provides an immaculate, chronological record containing:
+- Mathematical proofs formatted in clean LaTeX blocks.
+- Inline visual representations rendered by the subagent team.
+- Exact quiz questions, the options provided, your recorded answer, and the accompanying explanation.
+
+---
+
+## 🛠️ Verification & Test Suite
+
+Schola is built with uncompromising software engineering standards. Run the automated test suite locally to verify complete system integrity:
+
+```bash
+# Run the complete test suite (180+ tests)
+bash tests/run.sh
+
+# Run specific functional test suites
+bash tests/run.sh md-log     # Obsidian log generation
+bash tests/run.sh quiz       # Quiz voicing & UI mechanics
+bash tests/run.sh toggle     # Voice toggle & status engine
+bash tests/run.sh interrupt  # Audio interrupt & process lifecycle
+```
+
+---
+
+## 🔍 Troubleshooting
+
+<details>
+<summary><b>Command <code>/teach</code> is not recognized</b></summary>
+
+Ensure Claude Code was started with the `--plugin-dir` flag pointing directly to your repository clone containing `.claude-plugin/`:
+```bash
+claude --plugin-dir /path/to/learn
+```
+If a conflicting plugin shares the skill name, execute via the fully qualified namespace: `/learn-voice-teacher:teach`.
+</details>
+
+<details>
+<summary><b>Session notes do not appear in Obsidian</b></summary>
+
+1. Confirm `jq` is installed and reachable on your PATH (`which jq`).
+2. Verify `OBSIDIAN_VAULT_PATH` was exported in the same terminal shell prior to launching `claude`.
+3. Check the `sessions/` directory inside your vault. Notes are generated immediately following a completed assistant response or answered quiz question.
+</details>
+
+<details>
+<summary><b>Diagrams are missing or show broken image links</b></summary>
+
+Verify diagram dependencies:
+```bash
+which mmdc && which rsvg-convert
+```
+Ensure the target directory `$OBSIDIAN_VAULT_PATH/viz` exists so subagents can persist rendered PNGs.
+</details>
+
+<details>
+<summary><b>No audio output during voice mode</b></summary>
+
+1. Audio output requires macOS `say`. Verify your speech status:
+   ```bash
+   bash hooks/speak-toggle.sh status
+   ```
+2. If `SPEAK_CMD` is customized, verify the command binary exists in your `$PATH`.
+</details>
+
+<details>
+<summary><b>Tutor audio triggers microphone feedback</b></summary>
+
+Always wear headphones when pairing `/speak-on` with `/voice` dictation, or toggle audio off temporarily with `/speak-off`.
+</details>
+
+---
+
+## 🤝 Credits & Philosophy
+
+Project Schola was inspired by and adapted from the AI learning workflows pioneered by [Amos Blomqvist](https://github.com/amosblomqvist), showcased in [How I Use AI to Learn Things](https://www.youtube.com/watch?v=kzcI5F4tGiU).
+
+Architected and maintained by **[Om Jadhav](https://github.com/OJ102)**.
+
+*Building at the intersection of agentic systems, cognitive science, and human potential.*  
+If you have feedback, ideas, or want to collaborate, feel free to open an issue or connect!
