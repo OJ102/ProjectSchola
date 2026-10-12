@@ -74,9 +74,12 @@ def load_spans(store):
 
 
 def ntoks(t):
-    """Tokens for fuzzy comparison: number words become digits, n't splits off."""
+    """Word tokens for fuzzy comparison: number words become digits, n't
+    splits off, punctuation is dropped."""
     out = []
     for w in tokens(t):
+        if not re.match(r"\w", w):
+            continue  # punctuation would inflate the share of a window inside the cited cue
         if w.endswith("n't"):
             out += [w[:-3], "not"]
         else:
@@ -129,7 +132,7 @@ def fuzzy(anchor, prev_t, cur_t, next_t):
     w = P + C + N
     c0, c1 = len(P), len(P) + len(C)
     best, why = 0.0, "no window overlaps the cited span"
-    for L in range(max(1, len(a) - 2), len(a) + 3):
+    for L in range(max(1, len(a) - 1), len(a) + 2):
         for i in range(0, max(1, len(w) - L + 1)):
             overlap = max(0, min(i + L, c1) - max(i, c0))
             if overlap * 2 <= L:
