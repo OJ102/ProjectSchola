@@ -95,6 +95,15 @@ if want citations; then
   else
     tally < <(python3 -I "$TS/check_cites.py" "$SP" "$WORK/cites" 2>&1)
     tally < <(python3 -I "$TS/check_runner.py" "$ROOT" "$WORK/runner" 2>&1)
+    BH="$ROOT/hooks/source-librarian-block.sh"
+    if [ -f "$BH" ]; then
+      for c in "malformed|not json|2" "empty||2" "librarian|{\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"librarian\"}}|2" \
+               "other agent|{\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"general-purpose\"}}|0"; do
+        n="${c%%|*}"; r="${c##*|}"; i="${c#*|}"; i="${i%|*}"
+        printf '%s' "$i" | bash "$BH" >/dev/null 2>&1; rc=$?
+        [ "$rc" = "$r" ] && ok "d25: delegation block hook, $n input -> exit $r" || bad "d25: delegation block hook, $n input -> exit $r" "got rc=$rc"
+      done
+    fi
     # cached librarian briefs (book-derived, local only): every cite verifies, forgeries all rejected
     for x in "aie-post-training aie" "candle-lecture3 candle" "lecture vtt"; do
       set -- $x; b="$SP/out/briefs3/$1.md"; ids="$SP/out/units/$1.md.ids"
@@ -221,13 +230,35 @@ if want git; then
   stores=$(ls "$SP"/out/*/spans.jsonl 2>/dev/null)
   if [ -n "$stores" ]; then
     leak=$(cd "$ROOT" && python3 -I - $stores <<'PY'
-import json, re, subprocess, sys
-grams = set()
+import hashlib, json, os, re, subprocess, sys
+# Scope: only stores whose source is NOT a synthetic fixture (tests/fixtures/, spikes/fixtures-src/).
+# Stores carry no origin path, so a store counts as fixture-derived if report.json's sha256 is a
+# fixture file's hash, or if most of its spans occur verbatim in the fixture sources.
+FIX = subprocess.run(['git', 'ls-files', 'tests/fixtures', 'spikes/fixtures-src'], capture_output=True, text=True).stdout.split()
+fix_sha = {hashlib.sha256(open(f, 'rb').read()).hexdigest() for f in FIX if os.path.isfile(f)}
+fix_txt = ''
+for f in FIX:
+    try:
+        fix_txt += ' ' + re.sub(r'\s+', ' ', open(f, encoding='utf-8').read()).lower()
+    except Exception:
+        pass
+def is_fixture(st):
+    rep = os.path.join(os.path.dirname(st), 'report.json')
+    if os.path.exists(rep) and json.load(open(rep)).get('sha256') in fix_sha:
+        return True
+    heads = [json.loads(l)['norm'][:40] for l in open(st)]
+    heads = [h for h in heads if len(h) >= 20]
+    return bool(heads) and sum(h in fix_txt for h in heads) * 2 > len(heads)
+grams, scoped = set(), []
 for st in sys.argv[1:]:
+    if is_fixture(st):
+        continue
+    scoped.append(st)
     for l in open(st):
         t = json.loads(l)['norm']
         for i in range(0, max(1, len(t) - 60), 5):
             grams.add(t[i:i + 60])
+print('# scoped stores:', ' '.join(os.path.basename(os.path.dirname(x)) for x in scoped), file=sys.stderr)
 for f in subprocess.run(['git', 'ls-files'], capture_output=True, text=True).stdout.split():
     if f.startswith('tests/fixtures/') or f.startswith('spikes/fixtures-src/'):
         continue  # synthetic fixtures are their own source
