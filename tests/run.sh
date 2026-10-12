@@ -9,7 +9,7 @@ FILTER="${1:-}"
 for v in $(env | grep -oE '^(SPEAK_[A-Za-z0-9_]*|STUB_[A-Za-z0-9_]*|OBSIDIAN_[A-Za-z0-9_]*|CLAUDE_PLUGIN_[A-Za-z0-9_]*|VOICE_FLAG)='); do unset "${v%=}"; done
 export LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
 echo "suite: $(basename "$0") root=$ROOT bash=$BASH_VERSION hooks=$(ls "$ROOT"/hooks/*.sh | wc -l | tr -d ' ')"
-PASS=0; FAIL=0; SKIP=0; FAILED=()
+PASS=0; FAIL=0; SKIP=0; WARN=0; FAILED=(); WARNED=()
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/schola-tests.XXXXXX")
 trap 'pkill -f "$WORK/" 2>/dev/null; rm -rf "$WORK"' EXIT
@@ -29,7 +29,9 @@ echo $$ >> "${SPEAK_OUT:?}.pids"
 txt=$({ [ $# -gt 0 ] && printf '%s' "$*"; [ -t 0 ] || cat; })
 printf '%s' "$txt" >> "$SPEAK_OUT"
 printf '%s %s\n' "$$" "$(printf '%s' "$txt" | head -c 40 | tr '\n' ' ')" >> "$SPEAK_OUT.map"
-sleep 30
+sleep 30 & SL=$!
+trap 'kill $SL 2>/dev/null; exit 0' TERM INT HUP
+wait $SL
 S
 chmod +x "$STUB" "$SLOW"
 
@@ -37,6 +39,9 @@ chmod +x "$STUB" "$SLOW"
 ok()   { PASS=$((PASS+1)); echo "  ok   $1"; }
 bad()  { FAIL=$((FAIL+1)); FAILED+=("$1"); echo "  FAIL $1"; [ -n "$2" ] && printf '%s\n' "$2" | sed 's/^/         /'; }
 skip() { SKIP=$((SKIP+1)); echo "  skip $1 ($2)"; }
+warn() { WARN=$((WARN+1)); WARNED+=("$1"); echo "  WARN $1"; [ -n "$2" ] && printf '%s\n' "$2" | sed 's/^/         /'; }
+load1() { sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}'; }
+LOAD_WARN=8   # lead's rule: latency misses above this 1-min load average are warnings, not failures
 want() { [ -z "$FILTER" ] || [[ "$1" == *"$FILTER"* ]]; }
 need() { [ -f "$HOOKS/$1" ]; }
 
@@ -278,7 +283,7 @@ J
 
     # (3) speaker's children die with it (e.g. a wrapper that runs say as a child)
     fresh; voice_on; KID="$WORK/bin/kid-stub"
-    printf '#!/bin/bash\ncat >> "$SPEAK_OUT"; sleep 31 & echo $! >> "$SPEAK_OUT.kids"; wait\n' > "$KID"; chmod +x "$KID"
+    printf '#!/bin/bash\ncat >> "$SPEAK_OUT"; sleep 31 & echo $! >> "$SPEAK_OUT.kids"; wait\n' > "$KID"; chmod +x "$KID"   # no TERM trap on purpose: this tests the hook's descendant kill
     export SPEAK_CMD="$KID"
     jq -nc '{stop_hook_active:false,last_assistant_message:"Wrapped talk."}' | stop_hook; wait_spoken; sleep 0.3
     C=$(head -1 "$SPEAK_OUT.kids" 2>/dev/null)
@@ -392,8 +397,12 @@ if want lock; then
       rm -rf "$L"; eval "$2"
       local t0 t1; t0=$(now_ms); jq -nc '{prompt:"x"}' | bash "$HOOKS/speak-interrupt.sh" >/dev/null; t1=$(now_ms); sleep 0.3
       local dt=$((t1-t0))
-      { [ $dt -le 1000 ] && ! kill -0 "$P" 2>/dev/null; } && ok "lock: $1 → interrupt ≤1s (${dt}ms) and speech stopped" \
-        || bad "lock: $1 → interrupt ≤1s and speech stopped" "took ${dt}ms, speaker $P alive=$(kill -0 "$P" 2>/dev/null && echo y || echo n)"
+      local la; la=$(load1)
+      if kill -0 "$P" 2>/dev/null; then bad "lock: $1 → speech stopped" "speaker $P still alive (took ${dt}ms, load $la)"
+      else ok "lock: $1 → speech stopped"; fi
+      if [ $dt -le 1000 ]; then ok "lock: $1 → interrupt ≤1s (${dt}ms, load $la)"
+      elif awk -v l="$la" -v m="$LOAD_WARN" 'BEGIN{exit !(l+0 > m+0)}'; then warn "lock: $1 → interrupt ≤1s" "took ${dt}ms at load average $la (> $LOAD_WARN)"
+      else bad "lock: $1 → interrupt ≤1s" "took ${dt}ms at load average $la (≤ $LOAD_WARN)"; fi
       pkill -f "$SLOW" 2>/dev/null
     }
     lock_case "stale symlink to dead pid" 'ln -s "99999 Mon Jan  1 00:00:00 2001" "$L"'
@@ -470,6 +479,77 @@ if want quiz; then
     : > "$SPEAK_OUT"
     jq -nc --arg p "$TR" '{session_id:"sess-q1",transcript_path:$p,stop_hook_active:false,last_assistant_message:"Correct."}' | stop_hook
     wait_spoken; [ "$(spoken)" = "Correct." ] && ok "quiz: repeated identical later block still spoken" || bad "quiz: repeated identical later block still spoken" "spoken: '$(spoken)'"
+
+    # --- marker (93295f8): tool_use_id present → marker = that line, holds a single integer
+    fresh; voice_on; TR="$T/qm.jsonl"
+    printf '%s\n' '{"type":"user","message":{"content":"go"}}' \
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Marker teaching."}]}}' \
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-m1","name":"AskUserQuestion","input":{}}]}}' > "$TR"
+    jq -nc --arg p "$TR" '{session_id:"sm",transcript_path:$p,tool_use_id:"tu-m1",tool_name:"AskUserQuestion",tool_input:{questions:[{question:"Ready?"}]}}' | QH
+    wait_spoken; m=$(cat "$SPEAK_STATE_DIR/spoken.sm" 2>/dev/null)
+    [[ "$(spoken)" == "Marker teaching."*"Ready?"* ]] && ok "marker: tool_use found → text then question" || bad "marker: tool_use found → text then question" "spoken: $(spoken)"
+    [ "$m" = 3 ] && ok "marker: spoken.<sid> is the tool_use line (3)" || bad "marker: spoken.<sid> is the tool_use line (3)" "content: '$m'"
+    # tool_use line appears late (0.5s) but within the 1.5s wait → text still voiced
+    fresh; voice_on; TR="$T/qlate.jsonl"
+    printf '%s\n' '{"type":"user","message":{"content":"go"}}' '{"type":"assistant","message":{"content":[{"type":"text","text":"Late teaching."}]}}' > "$TR"
+    ( sleep 0.5; printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-late","name":"AskUserQuestion","input":{}}]}}' >> "$TR" ) &
+    jq -nc --arg p "$TR" '{session_id:"sl",transcript_path:$p,tool_use_id:"tu-late",tool_input:{questions:[{question:"Late?"}]}}' | QH; wait
+    wait_spoken; [[ "$(spoken)" == "Late teaching."*"Late?"* ]] && ok "marker: tool_use appearing at 0.5s is waited for" || bad "marker: tool_use appearing at 0.5s is waited for" "spoken: $(spoken)"
+    # tool_use never appears → only the questions, returns ≤3s, marker 0/absent
+    fresh; voice_on; TR="$T/qnever.jsonl"
+    printf '%s\n' '{"type":"user","message":{"content":"go"}}' '{"type":"assistant","message":{"content":[{"type":"text","text":"Unseen teaching."}]}}' > "$TR"
+    t0=$(now_ms); jq -nc --arg p "$TR" '{session_id:"sn",transcript_path:$p,tool_use_id:"tu-never",tool_input:{questions:[{question:"Never?"}]}}' | QH; dt=$(( $(now_ms)-t0 ))
+    wait_spoken; m=$(cat "$SPEAK_STATE_DIR/spoken.sn" 2>/dev/null)
+    { [ "$(spoken)" = "Never?" ] && [ $dt -le 3000 ] && { [ -z "$m" ] || [ "$m" -le 1 ] 2>/dev/null; }; } && ok "marker: missing tool_use → questions only, ${dt}ms, marker '${m:-absent}' (≤ turn start)" \
+      || bad "marker: missing tool_use → questions only, ≤3s, marker ≤ turn start (line 1)" "spoken: '$(spoken)' took ${dt}ms marker '$m'"
+    # …and Stop afterwards still voices the unmarked teaching text
+    printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Final words."}]}}' >> "$TR"; : > "$SPEAK_OUT"
+    jq -nc --arg p "$TR" '{session_id:"sn",transcript_path:$p,stop_hook_active:false,last_assistant_message:"Final words."}' | stop_hook
+    wait_spoken; [[ "$(spoken)" == *"Unseen teaching."*"Final words."* ]] && ok "marker: Stop picks up text the quiz couldn't mark" || bad "marker: Stop picks up text the quiz couldn't mark" "spoken: $(spoken)"
+    # last_assistant_message newer than the transcript is appended
+    fresh; voice_on; TR="$T/qlam.jsonl"
+    printf '%s\n' '{"type":"user","message":{"content":"go"}}' '{"type":"assistant","message":{"content":[{"type":"text","text":"Transcript part."}]}}' > "$TR"
+    jq -nc --arg p "$TR" '{session_id:"sa",transcript_path:$p,stop_hook_active:false,last_assistant_message:"Live only part."}' | stop_hook
+    wait_spoken; [[ "$(spoken)" == *"Live only part."* ]] && ok "marker: last_assistant_message not yet in transcript is spoken" || bad "marker: last_assistant_message not yet in transcript is spoken" "spoken: $(spoken)"
+
+    # --- turn boundaries (a78012b)
+    fresh; voice_on; TR="$T/img.jsonl"
+    printf '%s\n' '{"type":"user","message":{"content":"first question"}}' \
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}' \
+      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}' \
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"OLD REPLY previous turn."}]}}' \
+      '{"type":"user","message":{"content":[{"type":"text","text":"what is this?"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBO"}}]}}' \
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"NEW REPLY picture."}]}}' > "$TR"
+    jq -nc '{session_id:"si",prompt:"what is this?"}' | bash "$HOOKS/speak-interrupt.sh" >/dev/null
+    jq -nc --arg p "$TR" '{session_id:"si",transcript_path:$p,stop_hook_active:false,last_assistant_message:"NEW REPLY picture."}' | stop_hook
+    wait_spoken; [ "$(spoken)" = "NEW REPLY picture." ] && ok "turn: text+image prompt is a turn boundary" || bad "turn: text+image prompt is a turn boundary" "spoken: $(spoken)"
+    fresh; voice_on; TR="$T/imgonly.jsonl"
+    printf '%s\n' '{"type":"user","message":{"content":"q"}}' '{"type":"assistant","message":{"content":[{"type":"text","text":"OLD REPLY."}]}}' \
+      '{"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBO"}}]}}' \
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Image reply."}]}}' > "$TR"
+    jq -nc --arg p "$TR" '{session_id:"si2",transcript_path:$p,stop_hook_active:false}' | stop_hook
+    wait_spoken; [ "$(spoken)" = "Image reply." ] && ok "turn: image-only prompt is a turn boundary (fallback)" || bad "turn: image-only prompt is a turn boundary (fallback)" "spoken: $(spoken)"
+    fresh; voice_on; TR="$T/meta.jsonl"
+    printf '%s\n' '{"type":"user","message":{"content":"explain"}}' \
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"PART-ONE."}]}}' \
+      '{"type":"user","isMeta":true,"message":{"content":"<system-reminder>meta</system-reminder>"}}' \
+      '{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"meta array"}]}}' \
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"PART-TWO."}]}}' > "$TR"
+    jq -nc --arg p "$TR" '{session_id:"sm2",transcript_path:$p,stop_hook_active:false,last_assistant_message:"PART-TWO."}' | stop_hook
+    wait_spoken; s=$(spoken); [[ "$s" == *"PART-ONE."*"PART-TWO."* && "$s" != *meta* ]] && ok "turn: meta user entries mid-turn are not boundaries" || bad "turn: meta user entries mid-turn are not boundaries" "spoken: $s"
+    # >1MB turn (60 × 20KB text + tool rounds) still speaks the final reply
+    fresh; voice_on; TR="$T/huge.jsonl"; X=$(head -c 20000 /dev/zero | tr '\0' x)
+    { jq -nc '{type:"user",message:{content:"build it"}}'
+      for i in $(seq 1 60); do
+        jq -nc --arg t "step $i $X" --arg id "t$i" '{type:"assistant",message:{content:[{type:"text",text:$t},{type:"tool_use",id:$id,name:"Read",input:{}}]}}'
+        jq -nc --arg id "t$i" '{type:"user",message:{content:[{type:"tool_result",tool_use_id:$id,content:"ok"}]}}'
+      done
+      jq -nc '{type:"assistant",message:{content:[{type:"text",text:"FINAL REPLY done."}]}}'; } > "$TR"
+    kb=$(( $(wc -c < "$TR") / 1024 ))
+    jq -nc --arg p "$TR" '{session_id:"sh",transcript_path:$p,stop_hook_active:false,last_assistant_message:"FINAL REPLY done."}' | stop_hook
+    wait_spoken; [ "$(spoken)" = "FINAL REPLY done." ] && ok "turn: ${kb}KB turn still speaks final reply" || bad "turn: ${kb}KB turn still speaks final reply" "spoken: $(spoken | cut -c1-80)"
+    jq -nc --arg p "$TR" '{session_id:"sh2",transcript_path:$p,stop_hook_active:false}' | stop_hook
+    wait_spoken; [[ "$(spoken)" == *"FINAL REPLY done."* ]] && ok "turn: ${kb}KB turn, transcript fallback" || bad "turn: ${kb}KB turn, transcript fallback" "spoken: $(spoken | cut -c1-80)"
 
     # answered hook stops the question speech
     fresh; voice_on; export SPEAK_CMD="$SLOW"; TR="$T/quiz2.jsonl"
@@ -553,8 +633,10 @@ if want perm; then
       bad "perm: $sk runs a hooks script" "no 'bash …hooks/*.sh' command found"; continue; fi
     while IFS= read -r c; do
       e="${c//\$\{CLAUDE_PLUGIN_ROOT\}/$ROOT}"
-      # as written: ${CLAUDE_PLUGIN_ROOT} is substituted in rule and command alike, or in neither
-      if perm_match "$c" "$pats"; then ok "perm: $sk allows: $c"
+      # Docs (code.claude.com/docs/en/skills): in plugin skills ${CLAUDE_PLUGIN_ROOT} is substituted in the body
+      # AND in allowed-tools Bash rules. So check as written, and with both sides expanded.
+      epats="${pats//\$\{CLAUDE_PLUGIN_ROOT\}/$ROOT}"
+      if perm_match "$c" "$pats" && perm_match "$e" "$epats"; then ok "perm: $sk allows: $c"
       else bad "perm: $sk allows: $c" "allowed-tools patterns: ${pats:-<none>}"$'\n'"command as written: $c"$'\n'"expanded: $e"; fi
     done <<<"$cmds"
   done
@@ -565,7 +647,9 @@ if want perm; then
     pats=$(perm_patterns "$f"); hit=""
     # (a different script at another path can't be excluded portably, since the plugin root varies; not tested)
     for evil in "bash -c 'touch /tmp/pwned' \"\${CLAUDE_PLUGIN_ROOT}/hooks/speak-toggle.sh\" $arg" \
-                "bash --rcfile /tmp/evil -i \"\${CLAUDE_PLUGIN_ROOT}/hooks/speak-toggle.sh\" $arg"; do
+                "bash --rcfile /tmp/evil -i \"\${CLAUDE_PLUGIN_ROOT}/hooks/speak-toggle.sh\" $arg" \
+                "bash \"/tmp/evil.sh\" \"\${CLAUDE_PLUGIN_ROOT}/hooks/speak-toggle.sh\" $arg" \
+                "bash \"/tmp/evil.sh\" \"/x/hooks/speak-toggle.sh\" $arg"; do
       perm_match "$evil" "$pats" && hit="$hit"$'\n'"matches: $evil"
     done
     [ -z "$hit" ] && ok "perm: $sk pattern rejects injected commands" || bad "perm: $sk pattern rejects injected commands" "patterns: $pats$hit"
@@ -594,5 +678,6 @@ if want docs; then
 fi
 
 echo
-echo "passed=$PASS failed=$FAIL skipped=$SKIP total=$((PASS+FAIL))"
+echo "passed=$PASS failed=$FAIL warned=$WARN skipped=$SKIP total=$((PASS+FAIL+WARN))"
+[ $WARN = 0 ] || printf '  ~ %s\n' "${WARNED[@]}"
 [ $FAIL = 0 ] || { printf '  - %s\n' "${FAILED[@]}"; exit 1; }
