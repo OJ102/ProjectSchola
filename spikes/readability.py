@@ -29,6 +29,7 @@ NEG = re.compile(r"comment|share|sharing|social|related|sidebar|subscribe|newsle
                  r"\btoc\b|table-of-contents|headerlink|post-ufi|like-button|billboard|skip", re.I)
 POS = re.compile(r"article|content|entry|post-body|main|\bbody\b|story|prose|markdown|document", re.I)
 UNWRAP = {"div", "span", "section", "font", "center", "header"}
+MAX_DEPTH = 200
 BLOCKY = {"p", "pre", "li", "blockquote", "td", "dd", "h1", "h2", "h3", "h4", "h5", "h6", "figcaption"}
 
 
@@ -44,12 +45,15 @@ class Tree(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.root = Node("#root", [], None)
         self.cur = self.root
+        self.depth = 0
 
     def handle_starttag(self, tag, attrs):
         n = Node(tag, attrs, self.cur)
         self.cur.children.append(n)
-        if tag not in VOID:
+        # depth cap: deeper elements become leaves, so recursion stays bounded
+        if tag not in VOID and self.depth < MAX_DEPTH:
             self.cur = n
+            self.depth += 1
 
     def handle_startendtag(self, tag, attrs):
         self.cur.children.append(Node(tag, attrs, self.cur))
@@ -59,6 +63,10 @@ class Tree(HTMLParser):
         while n is not self.root and n.tag != tag:
             n = n.parent
         if n is not self.root:
+            d, x = 0, self.cur
+            while x is not n:
+                x, d = x.parent, d + 1
+            self.depth -= d + 1
             self.cur = n.parent
 
     def handle_data(self, data):
@@ -68,9 +76,11 @@ class Tree(HTMLParser):
 
 
 def walk(n):
-    yield n
-    for c in n.children:
-        yield from walk(c)
+    stack = [n]
+    while stack:
+        x = stack.pop()
+        yield x
+        stack.extend(reversed(x.children))
 
 
 def text_of(n):
