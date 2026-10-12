@@ -88,34 +88,37 @@ speak_bump_seq() { local s=$(( $(speak_seq) % 1000000000 + 1 )); echo "$s" > "$S
 speak_unsurrogate() { sed -E 's/\\u[dD][89a-fA-F][0-9a-fA-F]{2}/\\ufffd/g'; }
 speak_field() { jq -r "$1" <<<"$INPUT" 2>/dev/null || speak_unsurrogate <<<"$INPUT" | jq -r "$1" 2>/dev/null; }
 
-# Per-session record of what has already been spoken this turn (cksum of each trimmed text block),
-# so Stop does not repeat text the question hook already voiced. Cleared on every user prompt.
+# Per-session marker of how far through the transcript speech has got this turn: the line number of the
+# last entry already voiced. Position, not content, so a repeated "Correct." later in the turn is still
+# spoken. Its presence also means a quiz was voiced this turn. Cleared on every user prompt.
 speak_spoken_file() {
   local sid; sid=$(speak_field '.session_id // empty | strings' | tr -cd 'A-Za-z0-9_-' | cut -c1-64)
   echo "$SPEAK_STATE_DIR/spoken.${sid:-default}"
 }
-speak_hash() { printf '%s' "$1" | cksum | tr ' ' '-'; }
-speak_was_spoken() { [ -f "$SPOKEN_FILE" ] && grep -qxF -- "$(speak_hash "$1")" "$SPOKEN_FILE" 2>/dev/null; }
-speak_mark_spoken() { mkdir -p -- "$SPEAK_STATE_DIR" 2>/dev/null; speak_hash "$1" >> "$SPOKEN_FILE" 2>/dev/null; }
+speak_marker() { local m; { read -r m < "$SPOKEN_FILE"; } 2>/dev/null; case "$m" in ''|*[!0-9]*) return 1 ;; esac; echo "$m"; }
+speak_set_marker() { mkdir -p -- "$SPEAK_STATE_DIR" 2>/dev/null; echo "$1" > "$SPOKEN_FILE" 2>/dev/null; }
 
-# Text blocks of the current turn (after the last real user prompt) as NUL-separated, trimmed strings.
-# With "final", only the blocks after the last tool call (what the user sees as the closing reply).
-speak_turn_texts() { # $1 = transcript path, $2 = all|final
-  jq -Rjn --arg mode "$2" '
-    reduce (inputs
-            | (fromjson? // (gsub("\\\\u[dD][89a-fA-F][0-9a-fA-F]{2}"; "\\ufffd") | fromjson?))
-            | objects | select((.isSidechain // false) | not)) as $e ([];
-      if $e.type == "user" then
-        (if ($e.message.content | type) == "string" then [] else . end)
-      elif $e.type == "assistant" then
-        ($e.message.content // []) as $c
-        | if ($c | type) == "string" then . + [$c]
-          elif ($c | type) == "array" then
-            (if $mode == "final" and any($c[]; .type? == "tool_use") then [] else . end)
-            + [$c[] | select(.type? == "text") | .text | strings]
-          else . end
-      else . end)
-    | .[] | sub("^\\s+"; "") | sub("\\s+$"; "") | select(length > 0) | ., "\u0000"' "$1" 2>/dev/null
+# Scan the transcript ($1) for the current turn (after the last real user prompt). Prints one JSON object:
+#   {start: line of that prompt, n: last line, lt: line of the last tool call, tl: line of tool_use id $2,
+#    b: [{n: line, t: trimmed text}] for each assistant text block of the turn}
+speak_turn_scan() {
+  jq -Rcn --arg tid "${2:-}" '
+    reduce inputs as $raw ({n: 0, start: 0, lt: null, tl: null, b: []};
+      .n += 1
+      | ($raw | (fromjson? // (gsub("\\\\u[dD][89a-fA-F][0-9a-fA-F]{2}"; "\\ufffd") | fromjson?))) as $e
+      | if ($e | type) != "object" or ($e.isSidechain // false) then .
+        elif $e.type == "user" then
+          (if ($e.message.content | type) == "string" then .b = [] | .lt = null | .tl = null | .start = .n else . end)
+        elif $e.type == "assistant" then
+          .n as $n | ($e.message.content // []) as $c
+          | if ($c | type) == "string" then .b += [{n: $n, t: $c}]
+            elif ($c | type) == "array" then
+              .b += [$c[] | select(.type? == "text") | .text | strings | {n: $n, t: .}]
+              | (if any($c[]; .type? == "tool_use") then .lt = $n else . end)
+              | (if $tid != "" and any($c[]; .type? == "tool_use" and .id? == $tid) then .tl = $n else . end)
+            else . end
+        else . end)
+    | .b |= map(.t |= (sub("^\\s+"; "") | sub("\\s+$"; "")) | select(.t | length > 0))' "$1" 2>/dev/null
 }
 
 # Speak TEXT (already cleaned) if sequence number SEQ is still current and speech is on.

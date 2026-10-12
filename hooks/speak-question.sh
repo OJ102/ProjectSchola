@@ -11,17 +11,35 @@ speak_enabled || exit 0
 speak_enter || exit 0
 SPOKEN_FILE=$(speak_spoken_file)
 
+# Wait (we're async) up to ~1.5s for this tool call to reach the transcript, so the text written just
+# before it is there too. Then voice the turn's text after the marker, up to this tool call, and move the
+# marker to it. If the entry never shows up, voice only the question; the earlier text stays unmarked and
+# Stop picks it up.
 MSG=""
 TRANSCRIPT_PATH=$(speak_field '.transcript_path // empty | strings')
+TOOL_USE_ID=$(speak_field '.tool_use_id // empty | strings')
 if [ -f "$TRANSCRIPT_PATH" ]; then
-  while IFS= read -r -d '' b; do
-    speak_was_spoken "$b" && continue
-    speak_mark_spoken "$b"
-    MSG="${MSG:+$MSG
-
-}$b"
-  done < <(speak_turn_texts "$TRANSCRIPT_PATH" all)
+  if [ -n "$TOOL_USE_ID" ]; then
+    i=0
+    until grep -qF -- "\"$TOOL_USE_ID\"" "$TRANSCRIPT_PATH" 2>/dev/null; do
+      i=$((i + 1)); [ "$i" -gt 30 ] && break
+      sleep 0.05
+    done
+  fi
+  SCAN=$(speak_turn_scan "$TRANSCRIPT_PATH" "$TOOL_USE_ID")
+  if [ -n "$SCAN" ]; then
+    OUT=$(jq -cn --argjson s "$SCAN" --arg m "$(speak_marker)" --arg tid "$TOOL_USE_ID" '
+      ($m | tonumber? // null) as $m0
+      | (if $m0 != null and $m0 >= $s.start then $m0 else $s.start end) as $mk
+      | if $s.tl != null then {t: [$s.b[] | select(.n > $mk and .n <= $s.tl) | .t], m: $s.tl}
+        elif $tid == "" then {t: [$s.b[] | select(.n > $mk) | .t], m: $s.n}
+        else {t: [], m: $mk} end
+      | .t |= join("\n\n")' 2>/dev/null)
+    MSG=$(jq -r '.t // empty' <<<"$OUT" 2>/dev/null)
+    speak_set_marker "$(jq -r '.m // 0' <<<"$OUT" 2>/dev/null)"
+  fi
 fi
+[ -f "$SPOKEN_FILE" ] || speak_set_marker 0   # mark this turn as a voiced-quiz turn even without a transcript
 
 # Questions with their options, as plain sentences: "Question? The options are: A. B. C."
 QUESTIONS=$(speak_field '
