@@ -246,8 +246,6 @@ def verify(store, brief_path, allow_files, where=None, text=None):
     for ln_no, line in enumerate(text.split("\n"), 1):
         if not line.strip():
             continue
-        if ln_no == 1 and re.fullmatch(r"<!-- status: (verified|partial)\b[^<>]*-->", line.strip()):
-            continue  # cache status line written by the brief runner
         h = re.match(r"^\s*#", line)
         if h:
             m = re.fullmatch(r"## (.+)", line.rstrip())

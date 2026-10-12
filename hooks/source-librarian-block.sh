@@ -7,7 +7,7 @@ import json, sys
 try:
     d = json.load(sys.stdin)
 except ValueError:
-    sys.exit(0)
+    sys.stderr.write("malformed hook input; Agent call denied\n"); sys.exit(2)
 t = str((d.get("tool_input") or {}).get("subagent_type") or "")
 if t.split(":")[-1].strip().lower() == "librarian":
     sys.stderr.write("the librarian runs only via the source brief runner; do not delegate to it\n")

@@ -107,8 +107,8 @@ def partial(text, rep):
             dropped.append(ln)
         else:
             keep.append(ln)
-    out = "<!-- status: partial; dropped %d item(s) that failed verification -->\n" % len(dropped) + "\n".join(keep)
-    return out, dropped
+    # the status lives in <unit>.verify.json, never inside the brief
+    return "\n".join(keep), dropped
 
 
 def finalize(store, unit, text, outdir, attempts, runs, where):
@@ -118,7 +118,7 @@ def finalize(store, unit, text, outdir, attempts, runs, where):
     status, dropped = "verified", []
     if not rep["pass"]:
         text, dropped = partial(text, rep)
-        rep = sv.verify(store, None, [ids], where=where, text=re.sub(r"^<!--.*?-->\n", "", text))
+        rep = sv.verify(store, None, [ids], where=where, text=text)
         status = "partial" if rep["pass"] else "rejected"
     if status == "rejected":
         text = ""  # never cache a brief that fails, even after stripping

@@ -373,7 +373,8 @@ All the HIGHs below are fixed and re-run against the reporters' own repro script
   - Prerequisites are `Earlier unit: <unit-id>` (checked against the store's `units/`) or `Assumes: <≤10 words, no digits>`.
   - Further reading entries carry a cite.
   - Source caveats are only `[unclear|ocr-uncertain|injection-flagged] <span-id>`, with an id from the unit.
-  - The gate accepts the runner's single `<!-- status: … -->` cache line.
+  - A brief's cache status (`verified` / `partial` / `rejected`, plus dropped items) lives only in the `<unit>.verify.json` sidecar, never inside the brief (lead's ruling), so cached briefs pass the gate standalone.
+  - The delegation-block hook fails closed on malformed input.
 - **25:** `agents/librarian.md` is deleted. The prompt lives in `spikes/librarian-prompt.md` and is passed as an inline `--agents` definition by `brief_run.py`. The runner pins `--tools Read,Grep,Glob --strict-mcp-config --permission-mode default`, installs the guard hook through `--settings`, and denies `mcp__*`. The plugin `Agent|Task` block hook stays as an extra layer (28).
 - **26:** `color:transparent`, `height`/`width:0` (and their max-) with `overflow:hidden`, a later `display:block` override and @media print are handled. The descendant/attribute selector and CSS escape support I'd already written stays in `hidden.py`; its formal tests are deferred to increment 5, as ruled.
 - **Live briefs under the final contract** (`spikes/out/briefs3`, inline agent):
