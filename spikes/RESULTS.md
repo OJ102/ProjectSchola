@@ -155,3 +155,43 @@ Script: `/teach` the AI Engineering Post-Training unit, then one learner answer,
 ### Open risks
 - Measured over 5 turns, not 40. Source-derived tokens grow only with lookups (about 100 tokens each), so the budget is safe. Total context grows with the conversation as usual.
 - The tutor put a quotation mark around a paraphrase once, which the quote check flags. The skill should say that quotation marks mean verbatim.
+
+## 0e: Blog main-content extraction (stdlib)
+
+Files:
+- `spikes/fetch.py`: guarded fetch, per design decision 7.
+- `spikes/readability.py`: html.parser DOM → boilerplate removal → `<article>`/`<main>` or Arc90-style scoring → pandoc gfm.
+- `tests/fixtures/blog.html`: synthetic page with nav, ads, cookie banner, sidebar, share, newsletter, comments, related posts and a prompt-injection paragraph.
+```
+python3 spikes/fetch.py <url> spikes/out/web/x.html && python3 spikes/readability.py spikes/out/web/x.html spikes/out/web/x.md
+```
+
+### Fetch guardrails (decision 7), verified live
+- Refused: `http://localhost/`, `http://169.254.169.254/…`, `file:///etc/passwd`, `http://127.0.0.1.nip.io/` (public DNS name resolving to loopback), and an httpbin redirect to `http://127.0.0.1/`, which is re-checked at the hop.
+- curl is pinned to the checked IP with `--resolve` (no DNS rebinding between check and fetch). It runs with `--proto =http,https`, `--max-redirs 0` (redirects followed manually, at most 5), `--max-time 30` and `--max-filesize 20M`. The decompressed stream is cut at 20 MB.
+- Charset comes from the header, then `<meta charset>`, then UTF-8 with replacement.
+
+### Extraction on varied real pages
+| Page | Platform | Result | Method | Words | Heading anchors | Residual junk |
+|---|---|---|---|---|---|---|
+| interconnects.ai "The Cyber Risk Discourse is Broken" | Substack | full body, first and last paragraph present | article | 1,756 | 0/5 (Substack has no ids; falls back to URL § heading) | "Article voiceover…/Audio playback not supported" and one Share link (about 15 words) |
+| karpathy.github.io "Unreasonable Effectiveness of RNNs" | Jekyll | clean, full | article | 7,799 | 15/15 | none |
+| docs.python.org "9. Classes" | Sphinx docs | clean, full, code blocks kept | main | 5,329 | 18/18 (section ids moved onto headings) | an empty "Footnotes" label |
+| lilianweng.github.io "LLM Powered Autonomous Agents" | Hugo | clean, full; TOC and post-meta removed | article | 6,463 | 15/16 | none |
+| joelonsoftware.com "The Joel Test" | WordPress | full body | article | 3,588 | 0/1 | date/author line and a category list (about 40 words) |
+| dev.to "JavaScript Visualized: Event Loop" | Forem | full body; comments, billboards and actions removed | article | 759 | 0/1 | cover image and avatar line |
+| medium.com/@karpathy "Software 2.0" | Medium | **fetch refused: HTTP 403** (bot wall) | – | – | – | clean failure → lossy WebFetch fallback per the plan |
+| x.com/karpathy | JS app | **`js_required`, exit 3** | – | 0 | – | clean failure, no guessing |
+| `tests/fixtures/blog.html` | synthetic | exact article only; nav, ads, cookie, sidebar, share, newsletter, comments and related all removed | article | 113 | 2/3 | none; the injection paragraph is kept as data, and pandoc escapes its `[[cite:` as `\[\[cite:` |
+
+**Score: 6/6 readable articles have their main content right**, with ≤40 words of boilerplate in the worst case. 2/2 unreadable pages fail cleanly.
+
+### Recommendations
+- Use the stdlib heuristic as the default; no Docling or readability dependency is needed for articles. Apply the `NEG` rule on element ids unconditionally (a `class="section text-…"` once rescued dev.to's comments).
+- Headings without ids get `URL § heading` locators (plan). Sphinx-style `section[id]` ids are moved onto the heading.
+- A 403/429 from a bot wall (Medium) is a fetch failure, not an extraction failure. Report it and offer the WebFetch fallback marked `lossy`.
+- Span storage must neutralize literal `[[cite:` in source text. The verifier already rejects anchors containing `[[`.
+
+### Open risks
+- Byline and meta lines leak a few words on WordPress and Substack; harmless for teaching, but they become spans. A post-filter for short spans at the top (date/author patterns) would remove them.
+- Paywalled teasers (Substack paid posts) would extract the teaser as if it were the article. Detect a `paywall` class or a "subscribe to read" marker and report it (untested; no paid post available).
