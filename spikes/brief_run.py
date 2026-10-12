@@ -33,12 +33,12 @@ import source_verify as sv  # noqa: E402
 
 GUARD = os.path.join(ROOT, "hooks", "source-librarian-guard.sh")
 DENY = ["Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.config/**)", "Read(~/.gnupg/**)", "Read(**/.env)",
-        "Read(**/.env.*)", "Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Agent"]
+        "Read(**/.env.*)", "Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "mcp__*"]
 
 
 def settings_file():
     f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-    json.dump({"hooks": {"PreToolUse": [{"matcher": "Read|Grep|Glob",
+    json.dump({"hooks": {"PreToolUse": [{"matcher": ".*",
                                          "hooks": [{"type": "command", "command": GUARD}]}]},
                "permissions": {"deny": DENY}}, f)
     f.close()
@@ -47,7 +47,11 @@ def settings_file():
 
 def claude(prompt, store, resume=None, model=None):
     cmd = ["claude", "-p", "--plugin-dir", ROOT, "--agent", "learn-voice-teacher:librarian",
-           "--settings", settings_file(), "--output-format", "json", "--allowedTools", "Read", "Grep", "Glob"]
+           "--settings", settings_file(), "--output-format", "json",
+           # pin the toolset and permission mode so neither the agent file nor
+           # the user's defaults or MCP servers can widen it
+           "--tools", "Read", "Grep", "Glob", "--strict-mcp-config", "--permission-mode", "default",
+           "--allowedTools", "Read", "Grep", "Glob"]
     if model:
         cmd += ["--model", model]
     if resume:

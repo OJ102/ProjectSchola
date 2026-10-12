@@ -342,3 +342,26 @@ All the HIGHs below are fixed and re-run against the reporters' own repro script
 - `pdf_index` and all page indices are 1-based.
 - Adapters report captured vs total text where the format allows, so silent loss is visible.
 - Hidden content never becomes spans.
+
+### Round 5 fixes (adversary-2, at a65bcb5)
+- **Token boundaries (HIGH):** a match may not start or end inside a larger word, number, range or fraction. "toxic" in "non-toxic", "40" in "-40", "2" in "1/2" and "5" in "3-5" or "3 – 5" are all rejected. An em dash between words still counts as a boundary (Faraday's "potash—if I take" verifies). Judged on the original character, since normalization folds dashes.
+- **Fuzzy substitutions (HIGH):** a content word may differ from the caption only as a plural/possessive or a British/American spelling. Every other substitution is rejected, however close (cause/cure, prevent/present, accept/except). This is stricter than decision 16's "edit distance ≤ 2", and lead should confirm the rule change.
+- **Smuggled claims (MEDIUM):** Further reading and Source caveats items need cites. Prerequisites items must be `- Assumes: …` or `- Earlier unit: …` and may not cite, so they read as outside knowledge. The librarian prompt was updated to match.
+- **Confinement outside the runner (MEDIUM):**
+  - a plugin PreToolUse hook on `Agent|Task` (`hooks/source-librarian-block.sh`) refuses delegation to the librarian from any session;
+  - the agent description says it is internal;
+  - `brief_run.py` pins `--tools Read Grep Glob --strict-mcp-config --permission-mode default`, matches the guard on every tool (`.*`) and denies `mcp__*`;
+  - the guard refuses brace patterns that carry a path, and malformed input is denied with a message.
+  - `claude plugin validate .` passes.
+- **Hidden-text variants (MEDIUM):** `hidden.py` now parses CSS into ordered rules and handles:
+  - descendant, child and attribute selectors, and CSS escapes;
+  - `color:transparent`, and `height:0` with `overflow:hidden`;
+  - @media blocks other than screen/all are ignored (print rules no longer hide text);
+  - a later `display:block` un-hides (source order, no specificity).
+  Adversary-2's run2.py: 14/14 ok.
+- **Briefs regenerated live under the new schema** (`spikes/out/briefs3`):
+  - AIE: verified after 1 retry, 44 cites, ~2.7k tokens.
+  - Lecture: verified after 1 retry, 17 cites.
+  - Candle: **partial**. 3 items still cited `ch13.25` for words that are in `ch13.23`. The gate dropped them and listed them in `verify.json`, as decision 17 intends. 30 verified cites are kept.
+  - forge_check on all three: LEAKS 0.
+- **Accepted limit, unchanged:** `extra_claim_on_line` (a true quote plus an extra unsupported clause on the same line) passes. This is the entailment gap that decision 12's fact-checker covers; it is not prototyped.

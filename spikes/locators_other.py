@@ -27,7 +27,7 @@ import zipfile
 from html.parser import HTMLParser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from hidden import css_hidden_selectors, is_hidden  # noqa: E402
+from hidden import is_hidden, parse_css  # noqa: E402
 from srcnorm import neutralize, norm  # noqa: E402
 
 MAX_ENTRY = 64 * 1024 * 1024     # one decompressed zip entry
@@ -67,9 +67,9 @@ def page_of(a):
 
 
 class ChapterParser(HTMLParser):
-    def __init__(self, selectors=frozenset()):
+    def __init__(self, rules=()):
         super().__init__(convert_charrefs=True)
-        self.sel = selectors
+        self.rules = rules
         self.stack = []          # [tag, hidden_or_skip]
         self.items = []          # (kind, text, page_at_start, element_id, tag, nav_ids)
         self.buf, self.buf_page, self.buf_tag, self.buf_id = [], None, None, None
@@ -79,10 +79,10 @@ class ChapterParser(HTMLParser):
         self.hidden_chars = 0
 
     def suppressed(self):
-        return any(h for _, h in self.stack)
+        return any(h for _, h, _ in self.stack)
 
     def block_tag(self):
-        for t, _ in reversed(self.stack):
+        for t, _, _ in reversed(self.stack):
             if t in BLOCKS and t not in ("br", "hr"):
                 return t
         return "p"
@@ -107,8 +107,8 @@ class ChapterParser(HTMLParser):
             self.flush()
         if tag in VOID:
             return
-        hide = tag in SKIP or is_hidden(tag, a, self.sel)
-        self.stack.append([tag, hide])
+        hide = tag in SKIP or is_hidden(tag, a, self.rules, [(t, at) for t, _, at in self.stack])
+        self.stack.append([tag, hide, a])
         if tag in BLOCKS and not self.buf_id:
             self.buf_id = a.get("id")
 
@@ -133,7 +133,7 @@ class ChapterParser(HTMLParser):
 
     def handle_data(self, data):
         n = len(data.strip())
-        in_skip = any(t in SKIP for t, _ in self.stack)
+        in_skip = any(t in SKIP for t, _, _ in self.stack)
         if not in_skip:
             self.total_chars += n
         if self.suppressed():
@@ -195,10 +195,10 @@ def epub(path, outdir):
             manifest[i.group(1)] = urllib.parse.unquote(h.group(1))
     spine = [manifest[i] for i in re.findall(r'<itemref\b[^>]*\bidref="([^"]+)"', opf) if i in manifest]
     # stylesheets: rules that hide content (decision 11)
-    selectors = set()
+    rules = []
     for href in manifest.values():
         if href.lower().endswith(".css") and posixpath.join(base, href) in names:
-            selectors |= css_hidden_selectors(zread(z, posixpath.join(base, href), total))
+            rules += parse_css(zread(z, posixpath.join(base, href), total))
     nav_href = re.search(r'<item\b[^>]*properties="[^"]*\bnav\b[^"]*"[^>]*>', opf)
     nav_href = re.search(r'\bhref="([^"]+)"', nav_href.group(0)).group(1) if nav_href else None
     outline = []
@@ -227,7 +227,7 @@ def epub(path, outdir):
         full = posixpath.join(base, href)
         if full not in names or href == nav_href:
             continue
-        p = ChapterParser(frozenset(selectors))
+        p = ChapterParser(rules)
         p.feed(zread(z, full, total))
         p.close()
         total_chars += p.total_chars

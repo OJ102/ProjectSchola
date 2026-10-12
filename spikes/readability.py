@@ -27,7 +27,7 @@ import sys
 from html.parser import HTMLParser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from hidden import css_hidden_selectors, is_hidden  # noqa: E402
+from hidden import is_hidden, parse_css  # noqa: E402
 from srcnorm import neutralize  # noqa: E402
 
 TIME_LIMIT = 30  # seconds; past this the extractor exits with too_slow
@@ -107,7 +107,7 @@ def find(n, pred):
     return [x for x in walk(n) if pred(x)]
 
 
-def clean(n, selectors=frozenset()):
+def clean(n, rules=(), ancestors=()):
     keep = []
     for c in n.children:
         if c.tag == "#text":
@@ -116,7 +116,8 @@ def clean(n, selectors=frozenset()):
         cls = (c.attrs.get("class") or "") + " " + (c.attrs.get("id") or "")
         eid = c.attrs.get("id") or ""
         role = c.attrs.get("role") or ""
-        hidden = is_hidden(c.tag, {k: v or "" for k, v in c.attrs.items()}, selectors)
+        cattrs = {k: v or "" for k, v in c.attrs.items()}
+        hidden = is_hidden(c.tag, cattrs, rules, ancestors)
         if c.tag in DROP_TAGS or role in ("navigation", "complementary", "contentinfo", "banner", "dialog") or hidden:
             continue
         if c.tag == "header" and not find(c, lambda x: x.tag == "h1"):
@@ -124,7 +125,7 @@ def clean(n, selectors=frozenset()):
         if c.tag not in ("article", "main", "body", "html") and (
                 NEG.search(eid) or (NEG.search(cls) and not POS.search(cls))):
             continue
-        clean(c, selectors)
+        clean(c, rules, ancestors + ((c.tag, cattrs),))
         keep.append(c)
     n.children = keep
 
@@ -196,7 +197,7 @@ def extract(raw):
     body = next(iter(find(root, lambda x: x.tag == "body")), root)
     # the page's own <style> rules that hide content (decision 11)
     css = "".join(text_of(x) for x in find(root, lambda x: x.tag == "style"))
-    clean(body, frozenset(css_hidden_selectors(css)))
+    clean(body, parse_css(css))
     words_all = len(text_of(body).split())
     method, node = None, None
     for tag in ("article", "main"):

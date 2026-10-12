@@ -15,7 +15,9 @@ A cite is [[cite:<span-id> "<anchor>"]]. Each cite must:
     16: protected tokens (negations, numbers and number words, units,
     comparatives, multiplicatives, likelihood/modal words) match exactly, a
     substitution that adds or removes a negating prefix is never noise,
-    other substitutions are unprotected tokens within edit distance 2,
+    a content-word substitution is allowed only as a plural/possessive or a
+    British/American spelling variant (round 5: edit distance 2 let
+    cause/cure and prevent/present through),
     insertions/deletions are stopwords or fillers only, overall ratio >= 0.9,
     and more than half of the match lies in the cited cue.
 Strict schema (decision 17): exact "## " headings from SCHEMA, in order, each
@@ -40,7 +42,12 @@ CITE = re.compile(r'\[\[cite:([^\s\]"]+)\s+"(.*?)"\]\]')
 BARE_CITE = re.compile(r"\[\[cite:[^\]]*\]\]")
 SCHEMA = ["Where", "Core claims", "Definitions", "Key figures", "Equations", "Examples",
           "Prerequisites", "Quiz seeds", "Further reading", "Source caveats"]
-CLAIM_SECTIONS = {"Core claims", "Definitions", "Key figures", "Equations", "Examples", "Quiz seeds"}
+# Every section except Where and Prerequisites carries source claims and needs
+# cites (round 5: claims were smuggled into Further reading / Source caveats).
+CLAIM_SECTIONS = {"Core claims", "Definitions", "Key figures", "Equations", "Examples", "Quiz seeds",
+                  "Further reading", "Source caveats"}
+# Prerequisites hold outside knowledge only, in a fixed, visibly non-source form
+PREREQ_ITEM = re.compile(r"^- (Assumes|Earlier unit): \S")
 REQUIRED = {"Core claims", "Quiz seeds"}
 NOISY_KINDS = {"cue", "ocr"}
 MIN_WORDS, MIN_CHARS, MAX_WORDS = 6, 30, 25
@@ -109,6 +116,28 @@ def edit_distance(a, b):
     return prev[-1]
 
 
+def _canon(w):
+    """Collapse inflection and British/American spelling, nothing else."""
+    for suf in ("'s", "es", "s"):
+        if w.endswith(suf) and len(w) > len(suf) + 2:
+            w = w[:-len(suf)]
+            break
+    w = re.sub(r"our\b", "or", w)
+    w = re.sub(r"is(e|ed|ing|ation)$", r"iz\1", w)
+    w = re.sub(r"ys(e|ed|ing)$", r"yz\1", w)
+    w = re.sub(r"tre$", "ter", w)
+    w = re.sub(r"ll(ed|ing|er)$", r"l\1", w)
+    return w
+
+
+def spelling_variant(x, y):
+    """A content word may differ from the caption only as a plural/possessive
+    or a British/American spelling. Any other substitution, however close
+    ("cause"/"cure", "prevent"/"present", "accept"/"except"), can change the
+    claim, so it is never treated as transcription noise."""
+    return x == y or _canon(x) == _canon(y)
+
+
 def noise_ok(a, b):
     """Is the difference between token lists a and b plausible caption noise?"""
     soft = STOPWORDS | FILLERS
@@ -117,7 +146,7 @@ def noise_ok(a, b):
             continue
         xa, xb = a[i1:i2], b[j1:j2]
         for x, y in zip(xa, xb):
-            if protected(x) or protected(y) or negating_pair(x, y) or edit_distance(x, y) > 2:
+            if protected(x) or protected(y) or negating_pair(x, y) or not spelling_variant(x, y):
                 return False
         if any(t not in soft or protected(t) for t in xa[len(xb):] + xb[len(xa):]):
             return False
@@ -131,7 +160,7 @@ def fuzzy(anchor, prev_t, cur_t, next_t):
     P, C, N = ntoks(prev_t), ntoks(cur_t), ntoks(next_t)
     w = P + C + N
     c0, c1 = len(P), len(P) + len(C)
-    best, why = 0.0, "no window overlaps the cited span"
+    best, seen_reasons = 0.0, set()
     for L in range(max(1, len(a) - 1), len(a) + 2):
         for i in range(0, max(1, len(w) - L + 1)):
             overlap = max(0, min(i + L, c1) - max(i, c0))
@@ -139,17 +168,23 @@ def fuzzy(anchor, prev_t, cur_t, next_t):
                 continue
             core = w[i:i + L]
             if [x for x in core if protected(x)] != [x for x in a if protected(x)]:
-                why = why if best else "protected token mismatch (negation/number/unit/comparative/modal)"
+                seen_reasons.add("protected")
                 continue
             r = difflib.SequenceMatcher(None, a, core, autojunk=False).ratio()
             if r < FUZZY_MIN:
                 continue
             if not noise_ok(a, core):
-                why = why if best else "edits do not look like transcription noise"
+                seen_reasons.add("noise")
                 continue
             if r > best:
-                best, why = r, None
-    return best, why
+                best = r
+    if best:
+        return best, None
+    if "noise" in seen_reasons:
+        return 0.0, "edits are not transcription noise (content word changed)"
+    if "protected" in seen_reasons:
+        return 0.0, "protected token mismatch (negation/number/unit/comparative/modal)"
+    return 0.0, "no window overlaps the cited span"
 
 
 def check_cite(sid, anchor, spans, order, allowed):
@@ -233,6 +268,11 @@ def verify(store, brief_path, allow_files, where=None, text=None):
         item_re = r"^(\d+)\. \S" if section == "Quiz seeds" else r"^- \S"
         if not re.match(item_re, line):
             failures.append({"line": ln_no, "reason": f"not a schema item in {section}"})
+        if section == "Prerequisites":
+            if not PREREQ_ITEM.match(line):
+                failures.append({"line": ln_no, "reason": "Prerequisites items must start 'Assumes:' or 'Earlier unit:'"})
+            if CITE.search(line):
+                failures.append({"line": ln_no, "reason": "cite in Prerequisites (outside knowledge only)"})
         found = CITE.findall(line)
         if len(BARE_CITE.findall(line)) > len(found):
             failures.append({"line": ln_no, "reason": "malformed cite"})

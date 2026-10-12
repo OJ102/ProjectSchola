@@ -83,7 +83,24 @@ def find_tokens(anchor, text):
     L = len(a)
     for i in range(len(words) - L + 1):
         if words[i:i + L] == a:
-            return text[idx[toks[i][1]]:idx[toks[i + L - 1][2] - 1] + 1]
+            # the match must not start or end inside a larger word, number,
+            # range or fraction: "toxic" in "non-toxic", "40" in "-40",
+            # "2" in "1/2", "5" in "3-5" (a sentence-final "." may follow)
+            # (an em dash between words is ordinary punctuation, so it is
+            # judged on the ORIGINAL character, not the normalized "-")
+            s0, e0 = toks[i][1], toks[i + L - 1][2]
+            before = text[idx[s0] - 1] if s0 > 0 and idx[s0] > 0 else " "
+            after = n[e0] if e0 < len(n) else " "
+            after_o = text[idx[e0]] if e0 < len(n) else " "
+            after2 = n[e0 + 1] if e0 + 1 < len(n) else " "
+            joiners = "-/.+\u00b1\u2010\u2011\u2012\u2013\u2212"
+            # a spaced range "3 \u2013 5": the dash follows a number
+            head = text[:idx[s0]].rstrip() if s0 > 0 else ""
+            spaced_range = head[-1:] in ("\u2013", "\u2212", "/", "-") and head[:-1].rstrip()[-1:].isdigit()
+            if before.isalnum() or before in joiners or spaced_range or after.isalnum() \
+                    or (after in "-/" and after_o in joiners) or (after == "." and after2.isalnum()):
+                continue
+            return text[idx[s0]:idx[e0 - 1] + 1]
     return None
 
 
