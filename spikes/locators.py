@@ -304,10 +304,11 @@ def main():
                 rec = {"id": s["id"], "segment": f"p{i + 1:04d}", "locator": final[i], "kind": s["kind"],
                        "text": s["text"], "norm": nt, "sha1": hashlib.sha1(nt.encode()).hexdigest()}
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                seg.append(f"<!-- {s['id']} -->\n{s['text']}\n")
+                # id and text on one line, so a grep hit carries its span id
+                seg.append(f"[{s['id']}] {s['text']}")
                 nspans += 1
             with open(os.path.join(outdir, "segments", f"p{i + 1:04d}.md"), "w") as sf:
-                sf.write(f"<!-- page {final[i]} (PDF {i + 1}) -->\n\n" + "\n".join(seg))
+                sf.write(f"<!-- page {final[i]} (PDF {i + 1}) -->\n" + "\n".join(seg) + "\n")
 
     # Cross-reference check: '"Title" on page N' must find Title on a page
     # labelled N (label multimap; with duplicates, the page holding the title

@@ -123,3 +123,35 @@ Decision 1's floor (≥6 words or ≥30 chars, or the whole short span, and not 
 - Paraphrase fidelity isn't proven by verification (see above); the `--strict` fact-checker is still unmeasured.
 - Fuzzy mode was tested only on a hand-written VTT. Real auto-captions (rolling duplicates, no punctuation) are unmeasured until a yt-dlp source is allowed.
 - Librarian cost is about $0.08 per clean unit and about $0.21 with a retry; a 10-chapter book (~60 units) costs about $5–8 to brief fully. Briefs are lazy (on first teach), so the cost is spread out.
+
+## 0d: End-to-end dry run and context budget
+
+Files: `spikes/dryrun.py` (drives a headless session, one `claude -p` per learner turn with `--resume`, then reads the session transcript), `spikes/teach-source-draft.md` (the source-mode rules, appended to the system prompt).
+```
+python3 spikes/dryrun.py spikes/out/aie spikes/out/briefs/aie-post-training.md spikes/out/dryrun --model sonnet
+python3 spikes/dryrun.py spikes/out/aie spikes/out/briefs/aie-post-training.md spikes/out/dryrun --analyze   # re-measure, no model calls
+```
+Script: `/teach` the AI Engineering Post-Training unit, then one learner answer, one "where does it say…", a quiz request and a quiz answer (5 learner turns). The plugin's Stop-hook log is redirected to `spikes/out/vault`.
+
+### Measurements (second run, after the segment fix below)
+| Metric | Value |
+|---|---|
+| Source-derived tokens in the main context | **2,590** (budget 10,000): brief Read 2,483 + one Grep lookup 107 |
+| Other tool results | AskUserQuestion 39 |
+| Context per API call | about 41–43k tokens. This is almost all the Claude Code system prompt, tools, plugin skills and the teach skill. Turns with tool use report 85–114k because the per-invocation usage sums several API calls. |
+| Tutor citations | 8 `[[cite:id]]`, 0 ids outside the brief or lookup |
+| Tutor quote check | 1 mismatch caught: a correct quote from p0108.8, cited to p0109.1 (the brief's nearest id). The checker finds the span that really holds the quote (`repoint_to: p0108.8`). |
+| Cost / time | $0.18 for the 5-turn session (sonnet), 5–10 s per turn |
+
+### Findings that change the design
+1. **Grep lookups must return span ids.** In the first run, segments stored `<!-- id -->` on a separate line, so a Grep hit had no id. The tutor guessed the neighbouring brief id and rendered "p. 79" for a sentence on p. 78. Segments now hold one span per line, `[p0102.7] text`. On the rerun, the lookup cited correctly (p. 78).
+2. **Tutor cites need a quote check, not just an id allow-list.** The id allow-list (plan §4) passed all 8 cites, but one carried a quote from a different span. The Stop-hook check (`source-cite-check.sh`) should:
+   - verify any quotation placed right before a cite against the cited span;
+   - re-point it deterministically when the quote is found in another span of the unit or the lookup set;
+   - otherwise strip it.
+   This is prototyped in `dryrun.py`.
+3. With brief-only teaching, a full unit uses about 25% of the 10k budget. Two units per session plus a few lookups fit, which supports the plan's "/clear after about 2 units".
+
+### Open risks
+- Measured over 5 turns, not 40. Source-derived tokens grow only with lookups (about 100 tokens each), so the budget is safe. Total context grows with the conversation as usual.
+- The tutor put a quotation mark around a paraphrase once, which the quote check flags. The skill should say that quotation marks mean verbatim.
