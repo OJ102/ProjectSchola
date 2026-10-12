@@ -190,6 +190,8 @@ def run(argv):
     if miss:
         hints = sorted(set(miss.values()))
         raise StoreError(f"missing tools: {', '.join(sorted(miss))}; install with: {'; '.join(hints)}")
+    if "://" in opts["path"]:
+        raise StoreError("web sources are not supported yet (web adapter: increment 5)")
     src = os.path.realpath(os.path.expanduser(opts["path"]))
     stype, size = detect(src)
     root = sources_root()
