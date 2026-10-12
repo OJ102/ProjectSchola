@@ -1,0 +1,17 @@
+% Tester fixture: 24 pages, no /PageLabels, footers "Fit Book | N", one lying footer (page 12 prints 99).
+\documentclass[11pt,oneside]{book}
+\usepackage[paperwidth=7in,paperheight=9.19in,margin=1in]{geometry}
+\usepackage{fancyhdr}
+\usepackage[pdfpagelabels=false]{hyperref}
+\pagestyle{fancy}\fancyhf{}
+\fancyfoot[R]{Fit Book\ $|$\ \thepage}
+\renewcommand{\headrulewidth}{0pt}
+\begin{document}
+\newcount\n \n=1
+\loop
+  \ifnum\n=12 \fancyfoot[R]{Fit Book\ $|$\ 99}\else\fancyfoot[R]{Fit Book\ $|$\ \thepage}\fi
+  Body text of fixture page \the\n. It carries enough words to look like a real page of prose.
+  \newpage
+  \advance\n by 1
+\ifnum\n<25 \repeat
+\end{document}

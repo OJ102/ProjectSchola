@@ -1,0 +1,17 @@
+% Tester fixture: /PageLabels that disagree with the printed footers.
+% Footers print 1..N; the dictionary claims the pages start at 10.
+\documentclass[11pt,oneside]{book}
+\usepackage[paperwidth=7in,paperheight=9.19in,margin=1in]{geometry}
+\usepackage{fancyhdr}
+\usepackage[pdfpagelabels=false]{hyperref}
+\pdfcatalog{/PageLabels << /Nums [0 << /S /D /St 10 >>] >>}
+\pagestyle{fancy}\fancyhf{}
+\fancyfoot[R]{Lying Labels\ $|$\ \thepage}
+\renewcommand{\headrulewidth}{0pt}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[R]{Lying Labels\ $|$\ \thepage}}
+\begin{document}
+\chapter{One}
+Page one of the conflict fixture.
+\newpage Page two. \newpage Page three. \newpage Page four. \newpage Page five.
+\newpage Page six. \newpage Page seven. \newpage Page eight.
+\end{document}
