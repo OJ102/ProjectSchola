@@ -1,0 +1,38 @@
+\documentclass[11pt,oneside]{book}
+\usepackage[paperwidth=7in,paperheight=9.19in,margin=1in]{geometry}
+\usepackage{fancyhdr}
+\usepackage{amsmath}
+\usepackage[pdfpagelabels=PAGELABELS]{hyperref}
+\pagestyle{fancy}\fancyhf{}
+\fancyfoot[R]{\rightmark\ $|$\ \thepage}
+\renewcommand{\headrulewidth}{0pt}
+\fancypagestyle{plain}{\fancyhf{}}
+\begin{document}
+\frontmatter
+\chapter{Preface}
+This synthetic book is a test fixture for the locator spike. It has roman front matter, a two-chapter body, footers in the form page bar chapter, and one page whose footer lies.
+\newpage Second preface page with text so that roman numbering has more than one page.
+\newpage Third preface page.
+\mainmatter
+\chapter{Alpha Topics}
+\section{First Section}
+The alpha principle states that every span has a stable identifier derived from its page and position.
+\newpage
+The second alpha page discusses hyphen\-ation and ligatures such as ﬁnal and ﬂow, and “smart quotes”.
+See ``Beta Basics'' on page 5 for the next idea.
+\newpage
+\thispagestyle{empty}
+This page has no footer at all and must be interpolated.
+\newpage
+\fancyfoot[R]{\rightmark\ $|$\ 99}
+This page carries a lying footer number that the monotonic fit must correct.
+\newpage
+\fancyfoot[R]{\rightmark\ $|$\ \thepage}
+\chapter{Beta Basics}
+\section{Equations}
+The energy relation is
+\begin{equation} E = mc^2 \end{equation}
+and the beta rule follows from it.
+\newpage
+Last body page of the fixture.
+\end{document}

@@ -16,3 +16,10 @@ __pycache__/
 # Runtime state
 .memory/
 *.log
+
+# Source-mode spikes (book-derived output never committed)
+spikes/out/
+.spike-venv/
+spikes/fixtures-src/*.aux
+spikes/fixtures-src/*.out
+spikes/fixtures-src/*.pdf

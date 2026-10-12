@@ -1,0 +1,33 @@
+WEBVTT
+Kind: captions
+Language: en
+
+NOTE Synthetic lecture fixture for the locator spike. Chapters: 00:00 Intro, 00:01:10 Gradient descent, 00:02:30 Learning rate.
+
+00:00:00.000 --> 00:00:06.500
+Welcome back. Today we look at how a model
+learns from its mistakes.
+
+00:00:06.500 --> 00:00:14.000
+The loss function measures how wrong the
+predictions are on the training data.
+
+00:00:58.000 --> 00:01:10.000
+Keep that picture of a loss surface in mind.
+
+00:01:10.000 --> 00:01:19.250
+Gradient descent takes a step in the direction
+that lowers the loss the fastest.
+
+00:01:19.250 --> 00:01:27.000
+That direction is the negative of the gradient.
+
+00:02:30.000 --> 00:02:41.000
+The learning rate sets the size of each step.
+Too large and training diverges.
+
+00:02:41.000 --> 00:02:50.000
+Too small and training crawls along for ages.
+
+01:02:03.040 --> 01:02:09.000
+<v Lecturer>That is all for today, see you next week.
