@@ -1,0 +1,362 @@
+"""/ingest: turn a source into the normalized store.
+
+usage: source-ingest.sh <path> [--slug NAME] [--vision auto|all|none]
+                               [--ocr auto|applevision|tesseract|vision|none]
+                               [--force] [--rebuild] [--no-vault] [--json]
+
+  --slug     store name ([a-z0-9-], at most 60); default: from the file name
+  --vision   which pages/assets are marked for (lazy) Claude vision; no vision
+             call is ever made at ingest
+  --ocr      engine for pages without a text layer (default: Apple Vision on
+             macOS, else tesseract; "vision" defers them to lazy Claude vision)
+  --force    keep the result even if label validation fails (>5% mismatch)
+  --rebuild  ingest again even if the store is up to date
+  --no-vault do not touch the Obsidian vault
+  --json     print the report as JSON instead of the summary
+
+Exit codes: 0 ok (or up to date), 1 error, 2 usage, 3 label validation
+failed, 4 another ingest of the slug is running, 5 the source changed while
+it was being ingested.
+"""
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pdf as pdfadapter  # noqa: E402
+from store import (Locked, Store, StoreError, clean_meta, sha256_file, slugify, sources_root,  # noqa: E402
+                   sync_warnings, update_vault, vault_root, write_json)
+
+INGEST_VERSION = 1
+MAX_SOURCE = 2 * 1024 * 1024 * 1024
+REQUIRED = {"pdftotext": "brew install poppler", "pdfinfo": "brew install poppler",
+            "pdfimages": "brew install poppler", "pdftoppm": "brew install poppler",
+            "pdftohtml": "brew install poppler"}
+
+
+class Usage(Exception):
+    pass
+
+
+def parse_args(argv):
+    opts = {"slug": None, "vision": "auto", "ocr": "auto", "force": False, "rebuild": False, "vault": True,
+            "json": False, "path": None}
+    it = iter(argv)
+    for a in it:
+        if a in ("-h", "--help"):
+            raise Usage(__doc__)
+        if a in ("--slug", "--vision", "--ocr"):
+            v = next(it, None)
+            if v is None:
+                raise Usage(f"{a} needs a value")
+            opts[a[2:]] = v
+        elif a == "--force":
+            opts["force"] = True
+        elif a == "--rebuild":
+            opts["rebuild"] = True
+        elif a == "--no-vault":
+            opts["vault"] = False
+        elif a == "--json":
+            opts["json"] = True
+        elif a.startswith("--"):
+            raise Usage(f"unknown option {a}")
+        elif opts["path"] is None:
+            opts["path"] = a
+        else:
+            raise Usage("only one source per /ingest")
+    if not opts["path"]:
+        raise Usage("usage: source-ingest.sh <path> [--slug NAME] [--vision auto|all|none] "
+                    "[--ocr auto|applevision|tesseract|vision|none] [--force] [--rebuild] [--no-vault] [--json]")
+    if opts["vision"] not in ("auto", "all", "none"):
+        raise Usage("--vision must be auto, all or none")
+    if opts["ocr"] not in ("auto", "applevision", "tesseract", "vision", "none"):
+        raise Usage("--ocr must be auto, applevision, tesseract, vision or none")
+    return opts
+
+
+def detect(path):
+    if "://" in path:
+        raise StoreError("web sources are not supported yet (web adapter: increment 5)")
+    if not os.path.exists(path):
+        raise StoreError(f"no such file: {path}")
+    if not os.path.isfile(path):
+        raise StoreError(f"not a regular file: {path}")
+    size = os.path.getsize(path)
+    if size > MAX_SOURCE:
+        raise StoreError("source larger than 2 GB")
+    with open(path, "rb") as f:
+        head = f.read(1024)
+    if b"%PDF-" in head:
+        return "pdf", size
+    raise StoreError("unsupported source type (only PDF is supported so far; EPUB, web, documents and video "
+                     "come in later increments)")
+
+
+def code_hash():
+    """Hash of the adapter code: a store built by older code is rebuilt."""
+    h = hashlib.sha256()
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in sorted(os.listdir(here)):
+        if name.endswith((".py", ".swift")):
+            with open(os.path.join(here, name), "rb") as f:
+                h.update(name.encode() + b"\0" + f.read())
+    return h.hexdigest()[:16]
+
+
+def pdf_meta(path):
+    meta = {}
+    try:
+        r = subprocess.run(["pdfinfo", "-enc", "UTF-8", path], capture_output=True, timeout=60)
+        for ln in r.stdout.decode("utf-8", "replace").splitlines():
+            k, _, v = ln.partition(":")
+            if k in ("Title", "Author", "CreationDate", "Encrypted"):
+                meta[k] = v.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return meta
+
+
+def snapshot(src, dst):
+    """Copy the source while hashing it, so every tool reads the same bytes."""
+    h = hashlib.sha256()
+    tmp = dst + ".tmp"
+    with open(src, "rb") as fi, open(tmp, "wb") as fo:
+        for chunk in iter(lambda: fi.read(1 << 20), b""):
+            h.update(chunk)
+            fo.write(chunk)
+    os.replace(tmp, dst)
+    return h.hexdigest()
+
+
+def missing_tools():
+    return {t: hint for t, hint in REQUIRED.items() if not shutil.which(t)}
+
+
+def summarize(meta, rep, store_dir, vault_note, warnings):
+    L = rep["labels"]
+    t = rep["text"]
+    o = rep["outline"]
+    v = rep["vision"]
+    x = rep["xrefs"]
+    oc = rep["ocr"]
+    out = [f"Ingested: {meta['title']} ({meta['slug']})",
+           f"  type: {rep['type']}, {rep['pdf_pages']} pages, {meta['size'] / 1e6:.1f} MB",
+           f"  outline: {o['items']} items, depth {o['depth']}" + (" (generated outline)" if o["synthetic"] else ""),
+           f"  units: {rep['units']} (3-8k tokens each; {rep.get('units_undersized', 0)} undersized sections)",
+           f"  spans: {rep['spans']}",
+           f"  labels: read {L['read']}, interpolated {L['interpolated']}, fallback {L['fallback']}"
+           + (", /PageLabels present" if L["pagelabels_dict"] else ""),
+           ]
+    if L.get("label_conflict"):
+        out.append(f"  label conflict: /PageLabels disagrees with the printed footers on "
+                   f"{L['label_conflict']['count']} pages; footers used")
+    if L.get("footer_outliers"):
+        out.append(f"  footer outliers corrected or ignored: " +
+                   ", ".join(f"PDF {f['pdf_index']}" for f in L["footer_outliers"][:8]))
+    if L["fallback"]:
+        out.append(f"  {L['fallback']} pages have no printed label and are cited as \"PDF p. N\"")
+    val = rep["validation"]
+    out.append(f"  validation: {val['sampled'] - len(val['mismatched'])}/{val['sampled']} sampled footer labels match")
+    out.append(f"  text: captured {100 * t['captured_share']:.1f}% of {t['total_chars']} text-layer characters "
+               f"(headers/footers {t['header_footer_chars']}, hidden dropped {t['hidden_chars_dropped']}, "
+               f"footnote markers {t['footnote_marker_chars']})")
+    if oc["textless_pages"]:
+        out.append(f"  OCR: {oc['pages_ocred']}/{oc['textless_pages']} pages without a text layer read with "
+                   f"{oc['engine'] or 'nothing'}" + (f" ({oc['note']})" if oc["note"] else "")
+                   + (f"; {len(oc['failed'])} failed" if oc["failed"] else ""))
+    a = rep["assets"]
+    out.append(f"  assets: {a['rasters']} figures (duplicates {a.get('duplicates', 0)}, icons dropped "
+               f"{a.get('icons_dropped', 0)}), {a['rendered_pages']} rendered pages")
+    out.append(f"  vision: no calls made; {v['assets_needing_vision']} assets for lazy vision, "
+               f"about {v['estimated_tokens'] // 1000}k tokens if all are described")
+    out.append(f"  cross-refs: {x['resolved']}/{x['total']} resolved ({x['titled_resolved']}/{x['titled']} "
+               f"\"title\" on page N)")
+    out.append(f"  store: {store_dir}")
+    if vault_note:
+        out.append(f"  vault: {vault_note}")
+    for w in warnings:
+        out.append(f"  WARNING: {w}")
+    out.append(f"  time: {rep['seconds']['total']}s")
+    return "\n".join(out)
+
+
+def run(argv):
+    opts = parse_args(argv)
+    miss = missing_tools()
+    if miss:
+        hints = sorted(set(miss.values()))
+        raise StoreError(f"missing tools: {', '.join(sorted(miss))}; install with: {'; '.join(hints)}")
+    src = os.path.realpath(os.path.expanduser(opts["path"]))
+    stype, size = detect(src)
+    root = sources_root()
+    sha_pre = sha256_file(src, MAX_SOURCE)
+    if opts["slug"]:
+        slug = opts["slug"]
+    else:
+        stem = os.path.splitext(os.path.basename(src))[0]
+        slug = slugify(stem, f"source-{sha_pre[:8]}")
+        # a different file that maps to the same name gets its own store
+        ex = os.path.join(root, slug, "source.json")
+        try:
+            prev = json.load(open(ex)) if os.path.isfile(ex) else None
+        except (OSError, ValueError):
+            prev = None
+        if isinstance(prev, dict) and prev.get("origin") != src and prev.get("sha256") != sha_pre:
+            slug = (slug[:51].rstrip("-") + "-" + sha_pre[:8])
+    st = Store(slug, root)
+    st.lock()
+    try:
+        return ingest_locked(st, src, stype, size, opts)
+    finally:
+        st.unlock()
+
+
+def ingest_locked(st, src, stype, size, opts):
+    warnings = []
+    existing = st.source_json()
+    cache = None
+    t0 = time.time()
+    sha = sha256_file(src, MAX_SOURCE)
+    cache = st.cache_dir(sha)
+    settings = {"ocr": opts["ocr"], "vision": opts["vision"], "code": code_hash()}
+    if existing and existing.get("status") == "complete" and existing.get("sha256") == sha \
+            and existing.get("ingest_version") == INGEST_VERSION and existing.get("settings") == settings \
+            and not opts["rebuild"]:
+        try:
+            rep = json.load(open(st.path("report.json")))
+        except (OSError, ValueError):
+            rep = None
+        # a run whose OCR partly failed is resumed, not reported as up to date
+        if rep and not (rep.get("ocr") or {}).get("failed"):
+            vault_note = None
+            if opts["vault"]:
+                vp, vw = update_vault(st.slug, existing, {"units": rep.get("units", 0)})
+                vault_note = os.path.join(vp, "sources", st.slug, "progress.md")
+                warnings += [f"the vault looks synced or version-controlled ({w})" for w in vw]
+            if opts["json"]:
+                print(json.dumps(dict(rep, up_to_date=True), indent=1, ensure_ascii=False))
+            else:
+                print("Up to date (same file, same settings); nothing re-ingested. Use --rebuild to force.")
+                print(summarize(existing, rep, st.dir, vault_note, warnings))
+            return 0
+    snap = os.path.join(cache, "source.pdf")
+    snap_sha = snapshot(src, snap)
+    if snap_sha != sha:
+        raise SourceChanged("the source changed while it was being read; try again when it is stable")
+    build = st.build_dir()
+    rep = pdfadapter.build(snap, build, {"ocr": opts["ocr"], "vision": opts["vision"]}, cache,
+                           log=lambda m: print(m, file=sys.stderr))
+    if sha256_file(src, MAX_SOURCE) != sha:
+        shutil.rmtree(build, ignore_errors=True)
+        raise SourceChanged("the source changed during ingest; nothing was written. Run /ingest again")
+    val = rep["validation"]
+    if val["mismatch_rate"] > 0.05 and not opts["force"]:
+        shutil.rmtree(build, ignore_errors=True)
+        lines = "; ".join(f"PDF {m['pdf_index']}: footer {m['footer']!r} vs label {m['label']!r}"
+                          for m in val["mismatched"][:5])
+        raise ValidationFailed(f"label validation failed: {len(val['mismatched'])}/{val['sampled']} sampled pages "
+                               f"disagree with their printed footer ({lines}). Nothing was written. "
+                               "Re-run with --force to keep these labels.")
+    info = pdf_meta(snap)
+    xmp = rep.pop("xmp", {}) or {}
+    title = clean_meta(info.get("Title")) or xmp.get("title") or \
+        clean_meta(os.path.splitext(os.path.basename(src))[0])
+    meta = {"slug": st.slug, "type": rep["type"], "adapter": "pdf", "origin": src, "sha256": sha, "size": size,
+            "mtime": int(os.path.getmtime(src)), "title": title, "author": clean_meta(info.get("Author")) or xmp.get("author", ""),
+            "published": clean_meta(info.get("CreationDate"), 60), "ingest_version": INGEST_VERSION,
+            "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "settings": settings,
+            "license_note": "Personal local copy for study. Never publish, push or upload this store."}
+    rep["units_undersized"] = sum(1 for u in json.load(open(os.path.join(build, "units.json")))
+                                  if u.get("undersized"))
+    if rep["labels"]["fallback"] > 0.4 * rep["pdf_pages"]:
+        warnings.append("no consistent printed page numbers; most pages are cited as \"PDF p. N\"")
+    if rep["labels"].get("label_conflict"):
+        warnings.append("the PDF's /PageLabels dictionary disagrees with the printed footers; footers used")
+    if rep["ocr"]["note"] == "missing" and rep["ocr"]["textless_pages"]:
+        warnings.append("pages without a text layer were not OCRed: install tesseract (brew install tesseract) "
+                        "or Xcode command line tools for Apple Vision (xcode-select --install)")
+    if rep["ocr"]["failed"]:
+        warnings.append(f"OCR failed on {len(rep['ocr']['failed'])} pages")
+    if rep["encrypted"]:
+        warnings.append("the PDF is encrypted; text was read through poppler")
+    if val["mismatch_rate"] > 0.05:
+        warnings.append("label validation failed and was overridden with --force")
+    vroot = vault_root()
+    if st.root == vroot or st.root.startswith(vroot + os.sep):
+        warnings.append("the source store is inside the vault; set SCHOLA_SOURCES_DIR outside it")
+    rep["warnings"] = warnings
+    write_json(os.path.join(build, "report.json"), dict(rep, source=meta))
+
+    old_spans = None
+    if existing and existing.get("sha256") and existing.get("sha256") != sha and os.path.isfile(st.path("spans.jsonl")):
+        try:
+            old_spans = [json.loads(l) for l in open(st.path("spans.jsonl"), encoding="utf-8")]
+        except (OSError, ValueError):
+            old_spans = None
+    new_spans = [json.loads(l) for l in open(os.path.join(build, "spans.jsonl"), encoding="utf-8")]
+    st.commit(build, meta)
+    if old_spans is not None:
+        mig = st.migrate(old_spans, new_spans, existing.get("sha256"), sha)
+        rep["migration"] = {k: mig[k] for k in ("mapped", "briefs_rewritten", "briefs_stale")}
+        rep["migration"]["unmatched"] = len(mig["unmatched"])
+        write_json(st.path("report.json"), dict(rep, source=meta))
+    try:
+        os.unlink(snap)
+    except OSError:
+        pass
+    vault_note = None
+    if opts["vault"]:
+        vp, vw = update_vault(st.slug, meta, {"units": rep["units"]})
+        vault_note = os.path.join(vp, "sources", st.slug, "progress.md")
+        warnings += [f"the vault looks synced or version-controlled ({w}); the store stays outside it, "
+                     "but progress notes there may be uploaded" for w in vw]
+    rep["seconds"]["wall"] = round(time.time() - t0, 2)
+    if opts["json"]:
+        print(json.dumps(dict(rep, source=meta, store=st.dir), indent=1, ensure_ascii=False))
+    else:
+        print(summarize(meta, rep, st.dir, vault_note, warnings))
+        if "migration" in rep:
+            m = rep["migration"]
+            print(f"  re-ingest: source changed; {m['mapped']} span ids migrated, {m['unmatched']} unmatched, "
+                  f"{len(m['briefs_stale'])} briefs flagged for re-brief")
+    return 0
+
+
+class SourceChanged(StoreError):
+    pass
+
+
+class ValidationFailed(StoreError):
+    pass
+
+
+def main():
+    os.umask(0o077)  # the store is personal: owner-only files and directories
+    try:
+        sys.exit(run(sys.argv[1:]))
+    except Usage as e:
+        print(str(e).strip(), file=sys.stderr)
+        sys.exit(2)
+    except Locked as e:
+        print(f"ingest: {e}", file=sys.stderr)
+        sys.exit(4)
+    except SourceChanged as e:
+        print(f"ingest: {e}", file=sys.stderr)
+        sys.exit(5)
+    except ValidationFailed as e:
+        print(f"ingest: {e}", file=sys.stderr)
+        sys.exit(3)
+    except (StoreError, pdfadapter.AdapterError, OSError) as e:
+        print(f"ingest: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("ingest: interrupted; run it again to resume", file=sys.stderr)
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()
