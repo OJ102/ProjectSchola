@@ -4,15 +4,24 @@
 # jq's gsub cost per string small. Math (LaTeX and plain operators) is turned into words, not deleted.
 # Callers should cap the input size (speak.sh does) — gsub cost grows with matches per line.
 exec jq -Rrs '
+# Apply f until the value stops changing, at most n times.
+def fixpoint(f; n): if n <= 0 then . else (f) as $x | if $x == . then . else $x | fixpoint(f; n - 1) end end;
+
 def latex_words:
-  gsub("\\\\(?:left|right|displaystyle|mathrm|mathbf|mathit|text|operatorname|quad|qquad)\\b|\\\\[,;:!]"; " ")
-  | gsub("\\\\[dt]?frac\\s*\\{(?<a>[^{}]*)\\}\\s*\\{(?<b>[^{}]*)\\}"; " \(.a) over \(.b) ")
-  | gsub("\\\\sqrt\\s*\\{(?<a>[^{}]*)\\}"; " the square root of \(.a) ")
-  | gsub("\\^\\s*(?:\\{\\s*2\\s*\\}|2(?!\\d))"; " squared ")
-  | gsub("\\^\\s*(?:\\{\\s*3\\s*\\}|3(?!\\d))"; " cubed ")
-  | gsub("\\^\\s*\\{(?<e>[^{}]*)\\}"; " to the power of \(.e) ")
+  gsub("\\\\(?:left|right|displaystyle|quad|qquad)\\b|\\\\[,;:!]"; " ")
+  # structural rules match innermost braces only, so repeat until nested \\frac/\\sqrt/^{} are all resolved
+  | fixpoint(
+      gsub("\\\\[dt]?frac\\s*\\{(?<a>[^{}]*)\\}\\s*\\{(?<b>[^{}]*)\\}";
+           (.a | gsub("^\\s+|\\s+$"; "")) as $a | (.b | gsub("^\\s+|\\s+$"; "")) as $b
+           | if ($a | test("[\\s+=-]")) then " \($a), over \($b) " else " \($a) over \($b) " end)
+      | gsub("\\\\sqrt\\s*\\{(?<a>[^{}]*)\\}"; " the square root of \(.a) ")
+      | gsub("\\^\\s*(?:\\{\\s*2\\s*\\}|2(?!\\d))"; " squared ")
+      | gsub("\\^\\s*(?:\\{\\s*3\\s*\\}|3(?!\\d))"; " cubed ")
+      | gsub("\\^\\s*\\{(?<e>[^{}]*)\\}"; " to the power of \(.e) ")
+      | gsub("_\\s*\\{(?<e>[^{}]*)\\}"; " sub \(.e) ")
+      | gsub("\\\\(?:left|right)\\b|\\\\[,;:!]"; " ")
+      | gsub("\\\\(?:text|mathrm|mathbf|mathit|mathsf|operatorname|boldsymbol)\\s*\\{(?<a>[^{}]*)\\}"; " \(.a) "); 6)
   | gsub("\\^\\s*(?<e>\\\\?\\w)"; " to the power of \(.e) ")
-  | gsub("_\\s*\\{(?<e>[^{}]*)\\}"; " sub \(.e) ")
   | gsub("_\\s*(?<e>\\w)"; " sub \(.e) ")
   | gsub("\\\\(?:cdot|times)\\b|\\*"; " times ")
   | gsub("\\\\div\\b"; " divided by ")
@@ -55,6 +64,11 @@ def line_rules:
   | gsub("\\b(?:https?|ftp|file)://[^\\s)>\\]]+"; " "; "i")
   | gsub("\\bwww\\.[^\\s)>\\]]+"; " "; "i")
   # plain-text math before emphasis, so "3 * 4 * 5" is not read as emphasis
+  | gsub("(?<=[\\w)]) \\*\\* (?=[\\w(])|(?<=[\\w)])\\*\\*(?=[\\d(])"; " to the power of ")
+  | gsub("(?<=[\\w)])\\^\\s?2(?![\\d.])"; " squared ")
+  | gsub("(?<=[\\w)])\\^\\s?3(?![\\d.])"; " cubed ")
+  | gsub("(?<=[\\w)])\\^\\s?(?<e>-?[\\w.]+)"; " to the power of \(.e)")
+  | gsub("(?<=\\w)\\*(?=\\w)"; " times ")
   | gsub("(?<=\\S) \\* (?=\\S)|(?<=[\\d)])\\*(?=[\\d(])|\\s[×✕]\\s?"; " times ")
   | gsub("<=|≤"; " less than or equal to ") | gsub(">=|≥"; " greater than or equal to ")
   | gsub("!=|≠"; " not equal to ") | gsub("≈"; " approximately ")

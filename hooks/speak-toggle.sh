@@ -10,7 +10,7 @@ case "${1:-status}" in
     echo "speech on" ;;
   off)
     rm -f "$SPEAK_FLAG"
-    { speak_lock && { speak_bump_seq; speak_stop; speak_unlock; }; } >/dev/null 2>&1
+    speak_halt >/dev/null 2>&1
     echo "speech off" ;;
   status)
     speak_enabled && echo "speech on" || echo "speech off" ;;

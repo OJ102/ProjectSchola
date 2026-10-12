@@ -45,18 +45,38 @@ speak_stop() {
   return 0
 }
 
-# Mutual exclusion between overlapping hooks: mkdir is atomic. A lock older than 10s is stale.
+# Mutual exclusion between overlapping hooks. The lock is a symlink whose target is the owner's
+# "pid lstart": creating it is atomic, and a lock whose owner is gone (killed hook, reused pid) is broken
+# at once, so no age or clock is involved. Anything else at that path (e.g. an old lock directory) has no
+# owner and is cleared too. $1 = tries at 50ms (default 200 = 10s).
 speak_lock() {
   mkdir -p -- "$SPEAK_STATE_DIR" 2>/dev/null || return 1
-  local i=0 m
-  while ! mkdir "$SPEAK_LOCK" 2>/dev/null; do
-    m=$(stat -f %m "$SPEAK_LOCK" 2>/dev/null || stat -c %Y "$SPEAK_LOCK" 2>/dev/null)
-    if [ -n "$m" ] && [ $(( $(date +%s) - m )) -gt 10 ]; then rmdir "$SPEAK_LOCK" 2>/dev/null; continue; fi
-    i=$((i + 1)); [ "$i" -gt 200 ] && return 1
+  local tries="${1:-200}" i=0 owner pid start
+  SPEAK_LOCK_ME="$$ $(speak_pid_start $$)"
+  while ! ln -s "$SPEAK_LOCK_ME" "$SPEAK_LOCK" 2>/dev/null; do
+    if [ -L "$SPEAK_LOCK" ]; then
+      owner=$(readlink "$SPEAK_LOCK" 2>/dev/null)
+      read -r pid start <<<"$owner"
+      case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
+      if [ "$pid" -le 1 ] || [ -z "$start" ] || [ "$(speak_pid_start "$pid")" != "$start" ]; then
+        [ "$(readlink "$SPEAK_LOCK" 2>/dev/null)" = "$owner" ] && rm -f "$SPEAK_LOCK"
+      fi
+    elif [ -e "$SPEAK_LOCK" ]; then
+      rmdir "$SPEAK_LOCK" 2>/dev/null || mv -f "$SPEAK_LOCK" "$SPEAK_LOCK.stale.$$" 2>/dev/null
+    fi
+    i=$((i + 1)); [ "$i" -ge "$tries" ] && return 1
     sleep 0.05
   done
 }
-speak_unlock() { rmdir "$SPEAK_LOCK" 2>/dev/null; }
+speak_unlock() { [ "$(readlink "$SPEAK_LOCK" 2>/dev/null)" = "$SPEAK_LOCK_ME" ] && rm -f "$SPEAK_LOCK"; return 0; }
+
+# Stop speech now and invalidate replies still being prepared. Used on the synchronous paths (prompt,
+# quiz answer, toggle-off), so it waits for the lock at most ~0.5s; without the lock, stopping is still
+# safe because speak_stop only kills a pid whose start time matches.
+speak_halt() {
+  if speak_lock 10; then speak_bump_seq >/dev/null; speak_stop; speak_unlock
+  else speak_bump_seq >/dev/null; speak_stop; fi
+}
 
 speak_seq() { local s; { read -r s < "$SPEAK_SEQ_FILE"; } 2>/dev/null; case "$s" in ''|*[!0-9]*) s=0 ;; esac; echo "$s"; }
 # Call with the lock held. Prints the new sequence number.

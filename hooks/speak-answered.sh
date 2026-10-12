@@ -5,5 +5,5 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/speak-common.sh"
 cat >/dev/null
 [ -d "$SPEAK_STATE_DIR" ] || exit 0
-{ speak_lock && { speak_bump_seq; speak_stop; speak_unlock; }; } >/dev/null 2>&1
+speak_halt >/dev/null 2>&1
 exit 0
