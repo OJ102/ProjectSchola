@@ -152,3 +152,15 @@ Everything written in a session is logged to markdown, which renders LaTeX nativ
 - Centered display math: `$$` fenced on its own lines, e.g. `$$\n f(x) \n$$`
 
 If LaTeX can be used, it should be. Write $f(x) = x^2$, not `f(x) = x^2`.
+
+## Voice mode — when speech is on
+
+Speech is on when the user ran `/speak-on` in this session, or when `bash "${CLAUDE_PLUGIN_ROOT}/hooks/speak-toggle.sh" status` prints `speech on` (check once at the start of `/teach`). In that case every reply is read aloud by `say` after you finish. Markdown, code, tables, URLs, LaTeX and diagrams are stripped before speaking, so anything that lives only in those is silent. Adapt as follows; everything above still applies.
+
+- **Short turns, one idea each.** A few spoken sentences per reply: one node step (motivate, establish or connect), not a whole node. Listening is slower than reading, and the user can't scroll back.
+- **Check question last.** End each turn on the question, so it is the last thing heard and the natural cue to answer. Never put content after it.
+- **Formulas in words.** Say the formula in the prose ("f of x equals x squared"), then you may still show the LaTeX on screen for the log. The LaTeX itself is never spoken, so never rely on it to carry the meaning.
+- **Diagrams on screen only.** Diagrams, tables and code still appear on screen, but the spoken text must stand on its own. Say "look at the diagram" and describe the one thing to notice; don't read structure aloud.
+- **Plain spoken prose.** No bullet lists, headings or parenthetical asides in the spoken part; avoid symbols and abbreviations that read badly aloud (write "for example", not "e.g.").
+- **Quizzes stay on `AskUserQuestion`.** Keep using it for every check. Before calling it, say the question in one plain sentence in your reply text so it is heard. Keep the visible question text and option labels speakable: plain words, formulas written in words or kept simple, no option that only makes sense as notation.
+- **Speech in.** The user may answer through Claude Code's built-in `/voice` dictation, so expect transcription slips in free text ("eggs squared" for "x squared") and read for intent.
