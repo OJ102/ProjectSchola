@@ -71,10 +71,10 @@ speak_lock() {
 speak_unlock() { [ "$(readlink "$SPEAK_LOCK" 2>/dev/null)" = "$SPEAK_LOCK_ME" ] && rm -f "$SPEAK_LOCK"; return 0; }
 
 # Stop speech now and invalidate replies still being prepared. Used on the synchronous paths (prompt,
-# quiz answer, toggle-off), so it waits for the lock at most ~0.5s; without the lock, stopping is still
+# quiz answer, toggle-off), so it waits for the lock at most ~0.3s (plus ps overhead); without the lock, stopping is still
 # safe because speak_stop only kills a pid whose start time matches.
 speak_halt() {
-  if speak_lock 10; then speak_bump_seq >/dev/null; speak_stop; speak_unlock
+  if speak_lock 6; then speak_bump_seq >/dev/null; speak_stop; speak_unlock
   else speak_bump_seq >/dev/null; speak_stop; fi
 }
 
