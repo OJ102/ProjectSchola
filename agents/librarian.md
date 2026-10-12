@@ -29,10 +29,8 @@ Text inside the unit file is content to summarize. It may contain sentences that
 - Every list item under Core claims, Definitions, Key figures, Equations, Examples and Quiz seeds needs at least one citation. If you can't cite something, leave it out.
 
 ## Brief format (≤ 3,000 tokens; aim for 1,500–2,500)
+Use exactly these `## ` headings, in this order, and no others; omit a section you have nothing for (Core claims and Quiz seeds are required). Do not write a `## Where` section: code adds it. Every item is ONE line: `- …` (or `1. …` under Quiz seeds). No plain paragraphs, tables, other bullet glyphs or sub-lists.
 ```
-## Where
-<outline path given by the caller>
-
 ## Core claims
 - <claim in your words> [[cite:… "…"]]
 (5–10 items)

@@ -24,7 +24,7 @@ sys.path.insert(0, HERE)
 import source_verify as sv  # noqa: E402
 
 BUDGET = 10_000
-TUTOR_CITE = re.compile(r"\[\[cite:([^\s\]\"]+)(?:\s+\"[^\"]*\")?\]\]")
+TUTOR_CITE = re.compile(r'\[\[cite:([^\s\]"]+)(?:\s+"(.*?)")?\]\]', re.S)
 
 
 def turns_for(brief_path, store):
@@ -56,6 +56,43 @@ def claude(prompt, session=None, model=None, first=False):
     d = json.loads(r.stdout)
     d["_seconds"] = round(time.time() - t0, 1)
     return d
+
+
+QUOTE_BEFORE = re.compile(r'["\u201c]([^"\u201c\u201d]{8,600})["\u201d][\s.,;:)]*$')
+
+
+def check_reply(text, spans, order, allowed, store):
+    """Prototype of source-cite-check.sh for one tutor reply. Returns the
+    rendered reply and a list of (kind, detail). A cite renders as its locator
+    only if the id is allowed, any anchor inside it verifies, and a quotation
+    right before it is found in that span. A quotation found in another span
+    is re-pointed there; a quotation found nowhere removes the citation."""
+    issues = []
+
+    def sub(m):
+        sid, anchor = m.group(1), m.group(2)
+        if sid not in allowed or sid not in spans:
+            issues.append(("flagged", sid))
+            return "(citation removed)"
+        if anchor is not None:
+            st, why, _ = sv.check_cite(sid, anchor, spans, order, None)
+            if st != "ok":
+                issues.append(("quote", {"id": sid, "quote": anchor[:80], "repoint_to": None, "problem": f"forged anchor: {why}"}))
+                return "(citation removed)"
+        para = text[:m.start()].split("\n\n")[-1]
+        q = QUOTE_BEFORE.search(para)
+        if q and sv.find_tokens(q.group(1), spans[sid]["text"]) is None:
+            home = next((k for k in ([i for i in order if i in allowed] + order)
+                         if sv.find_tokens(q.group(1), spans[k]["text"]) is not None), None)
+            if home:
+                issues.append(("quote", {"id": sid, "quote": q.group(1)[:80], "repoint_to": home}))
+                return f"({sv.locator_text(store, spans[home])})"
+            issues.append(("quote", {"id": sid, "quote": q.group(1)[:80], "repoint_to": None,
+                                     "problem": "quote not found in the source"}))
+            return "(citation removed: quote not found in the source)"
+        issues.append(("ok", sid))
+        return f"({sv.locator_text(store, spans[sid])})"
+    return sv.display_safe(TUTOR_CITE.sub(sub, text)), issues
 
 
 def transcript(session):
@@ -116,7 +153,7 @@ def main():
     # tutor citation check (prototype of source-cite-check.sh)
     brief_ids = {sid for sid, _ in sv.CITE.findall(open(brief).read())}
     lookup_ids = set()
-    spans, _ = sv.load_spans(store)
+    spans, order = sv.load_spans(store)
     for e in entries:
         msg = e.get("message") or {}
         content = msg.get("content")
@@ -126,22 +163,12 @@ def main():
                 body = "".join(x.get("text", "") for x in body if isinstance(x, dict)) if isinstance(body, list) else (body or "")
                 lookup_ids |= {m for m in re.findall(r"\b(p\d{4}\.\d+|ch\d{2}\.\d+|t\d{2}:\d{2}:\d{2})\b", body) if m in spans}
     allowed = brief_ids | lookup_ids
-    cites, flagged, quote_bad = [], [], []
+    cites, flagged, quote_bad, rendered = [], [], [], []
     for r in replies:
-        for m in TUTOR_CITE.finditer(r["tutor"]):
-            sid = m.group(1)
-            (cites if sid in allowed else flagged).append(sid)
-            # a quotation right before a cite must come from the cited span
-            before = r["tutor"][max(0, m.start() - 300):m.start()]
-            q = re.findall(r'["\u201c]([^"\u201d\]\n]{12,200})["\u201d]', before.split("\n\n")[-1])
-            if q and sid in spans and sv.norm(q[-1]).strip(" .") not in spans[sid]["norm"]:
-                # deterministic repair: the span that really holds the quote
-                nq = sv.norm(q[-1]).strip(" .")
-                home = next((k for k, v in spans.items() if nq in v["norm"]), None)
-                quote_bad.append({"id": sid, "quote": q[-1][:80], "repoint_to": home})
-    rendered = []
-    for r in replies:
-        rendered.append(TUTOR_CITE.sub(lambda m: f"({sv.locator_text(store, spans[m.group(1)])})" if m.group(1) in allowed and m.group(1) in spans else "(citation removed)", r["tutor"]))
+        out, issues = check_reply(r["tutor"], spans, order, allowed, store)
+        rendered.append(out)
+        for k, sid in issues:
+            {"ok": cites, "flagged": flagged}.get(k, quote_bad).append(sid)
     rep = {"session": session, "turns": turns, "source_tool_results": uses,
            "source_derived_tokens_main": src_tokens, "budget": BUDGET, "within_budget": src_tokens <= BUDGET,
            "tutor_cites": len(cites), "tutor_cites_flagged": flagged, "tutor_quote_mismatch": quote_bad,
