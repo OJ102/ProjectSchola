@@ -26,7 +26,9 @@ S
 cat > "$SLOW" <<'S'
 #!/bin/bash
 echo $$ >> "${SPEAK_OUT:?}.pids"
-{ [ $# -gt 0 ] && printf '%s' "$*"; [ -t 0 ] || cat; } >> "$SPEAK_OUT"
+txt=$({ [ $# -gt 0 ] && printf '%s' "$*"; [ -t 0 ] || cat; })
+printf '%s' "$txt" >> "$SPEAK_OUT"
+printf '%s %s\n' "$$" "$(printf '%s' "$txt" | head -c 40 | tr '\n' ' ')" >> "$SPEAK_OUT.map"
 sleep 30
 S
 chmod +x "$STUB" "$SLOW"
@@ -49,6 +51,8 @@ fresh() {
 wait_spoken() { local i; for i in $(seq 1 40); do [ -s "$SPEAK_OUT" ] && { sleep 0.2; return 0; }; sleep 0.1; done; return 1; }
 spoken() { tr -s ' \n\t' '   ' < "$SPEAK_OUT" | sed 's/^ //; s/ $//'; }
 
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; }
+lstart_of() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//'; }
 clean() { # run the cleaner on stdin text
   if need speak-clean.sh; then bash "$HOOKS/speak-clean.sh"; else return 99; fi
 }
@@ -132,6 +136,26 @@ if want clean; then
   c_has   "clean: snake_case word kept"     'the my_var name'                           "my"
   c_lacks "clean: tilde-fence removed"      $'A\n~~~\nhidden_tilde\n~~~\nB'           "hidden_tilde"
   c_lacks "clean: unclosed fence hides rest" $'A\n```\nleak_me'                         "leak_me"
+  # math is read in words, not deleted (builder 02efcfa)
+  c_has   "clean: \$x^2\$ → x squared"        'The derivative of $x^2$ is $2x$.'          "x squared"
+  c_has   "clean: x<y → less than"          'if x<y then'                               "x less than y"
+  c_has   "clean: a>b → greater than"       'when a>b we stop'                          "a greater than b"
+  c_has   "clean: 3 * 4 → times"            '3 * 4 = 12'                                "3 times 4"
+  c_has   "clean: = in LaTeX → equals"      'so $a=b$ holds'                            "a equals b"
+  c_has   "clean: C# → C sharp"             'Use C# daily'                              "C sharp"
+  c_lacks "clean: brackets removed"         'see [note] here'                           "["
+  c_has   "clean: bracket text kept"        'see [note] here'                           "note"
+  c_lacks "clean: known HTML tag stripped"  'a <b>bold</b> word'                        "<b>"
+  c_has   "clean: x<y>z not eaten as tag"   'and x<y>z ok'                              "less than y greater than z"
+  c_lacks "clean: say [[slnc]] command defused ([[)" '[[[[slnc 30000]]]] hello'          "[["
+  c_lacks "clean: say [[slnc]] command defused (]])" '[[[[slnc 30000]]]] hello'          "]]"
+  c_has   "clean: quadratic formula in words" '$x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$' "square root of b squared minus 4ac, over 2a"
+  c_has   "clean: nested frac"              '$\frac{\frac{1}{2}}{3}$'                  "1 over 2, over 3"
+  c_has   "clean: f(x) = x^2 plain"         'f(x) = x^2'                                "x squared"
+  c_has   "clean: x ** 2 → power"           'x ** 2'                                    "to the power of"
+  c_has   "clean: 2**10 → power"            '2**10'                                     "to the power of"
+  c_has   "clean: a*b*c → times"            'a*b*c'                                     "a times b times c"
+  o=$(printf '**bold**' | clean); [ "$(printf '%s' "$o" | tr -d '[:space:]')" = bold ] && ok "clean: **bold** → bold (not power)" || bad "clean: **bold** → bold (not power)" "got: $o"
   o=$(printf '' | clean); rc=$?
   if [ $rc = 99 ]; then skip "clean: empty in → empty out" "no speak-clean.sh"
   elif [ -z "$(printf '%s' "$o" | tr -d '[:space:]')" ]; then ok "clean: empty in → empty out"; else bad "clean: empty in → empty out" "got: $o"; fi
@@ -244,6 +268,53 @@ J
     grep -q "^$P2 " "$SPEAK_STATE_DIR/speak.pid" 2>/dev/null && ok "stop: speak.pid records live speaker" || bad "stop: speak.pid records live speaker" "pidfile: $(cat "$SPEAK_STATE_DIR/speak.pid" 2>&1)"
     pkill -f "$SLOW" 2>/dev/null
 
+    # (4) newer reply that cleans to nothing still stops the old speech
+    fresh; voice_on; export SPEAK_CMD="$SLOW"
+    jq -nc '{stop_hook_active:false,last_assistant_message:"Old talk."}' | stop_hook; wait_spoken
+    P1=$(head -1 "$SPEAK_OUT.pids")
+    jq -nc '{stop_hook_active:false,last_assistant_message:"```\ncode only\n```"}' | stop_hook; sleep 0.8
+    kill -0 "$P1" 2>/dev/null && bad "stop: empty newer reply stops old speech" "pid $P1 alive" || ok "stop: empty newer reply stops old speech"
+    pkill -f "$SLOW" 2>/dev/null
+
+    # (3) speaker's children die with it (e.g. a wrapper that runs say as a child)
+    fresh; voice_on; KID="$WORK/bin/kid-stub"
+    printf '#!/bin/bash\ncat >> "$SPEAK_OUT"; sleep 31 & echo $! >> "$SPEAK_OUT.kids"; wait\n' > "$KID"; chmod +x "$KID"
+    export SPEAK_CMD="$KID"
+    jq -nc '{stop_hook_active:false,last_assistant_message:"Wrapped talk."}' | stop_hook; wait_spoken; sleep 0.3
+    C=$(head -1 "$SPEAK_OUT.kids" 2>/dev/null)
+    jq -nc '{prompt:"x"}' | bash "$HOOKS/speak-interrupt.sh" >/dev/null; sleep 0.5
+    { [ -n "$C" ] && ! kill -0 "$C" 2>/dev/null; } && ok "interrupt: speaker's child process killed too" || bad "interrupt: speaker's child process killed too" "child=$C alive=$(kill -0 "$C" 2>/dev/null && echo y || echo n)"
+    pkill -f "$KID" 2>/dev/null; [ -n "$C" ] && kill "$C" 2>/dev/null
+
+    # (2) slow-to-clean reply A, then quick reply B. Timing-independent end state: B is the last thing
+    # spoken, and exactly one speaker (B's) is left alive. If A finished cleaning first, speaking A briefly is fine.
+    alive_speakers() { local n=0 p; for p in $(cat "$SPEAK_OUT.pids" 2>/dev/null); do kill -0 "$p" 2>/dev/null && n=$((n+1)); done; echo $n; }
+    big=$(printf '*a* %.0s' $(seq 1 30000))
+    fresh; voice_on; export SPEAK_CMD="$SLOW"
+    jq -nc --arg m "OLD-REPLY-A $big" '{stop_hook_active:false,last_assistant_message:$m}' | stop_hook &
+    APID=$!; sleep 0.2
+    jq -nc '{stop_hook_active:false,last_assistant_message:"NEW-REPLY-B"}' | stop_hook
+    wait "$APID"; sleep 0.8
+    n=$(alive_speakers); read -r LP LS < "$SPEAK_STATE_DIR/speak.pid" 2>/dev/null
+    LT=$(awk -v p="$LP" '$1==p{ $1=""; print substr($0,2) }' "$SPEAK_OUT.map")
+    { [ "$n" = 1 ] && kill -0 "$LP" 2>/dev/null && [ "$(lstart_of "$LP")" = "$LS" ] && [[ "$LT" == NEW-REPLY-B* ]]; } \
+      && ok "stop: stale slower reply never outlives newer one" || bad "stop: stale slower reply never outlives newer one" "live speakers: $n | pidfile: $LP '$LS' | that speaker's text: ${LT:0:40}"
+    # interrupt / speak-off while A is still cleaning → no speech left running
+    for how in interrupt off; do
+      fresh; voice_on; export SPEAK_CMD="$SLOW"
+      jq -nc --arg m "LONG-REPLY $big" '{stop_hook_active:false,last_assistant_message:$m}' | stop_hook &
+      APID=$!; sleep 0.2
+      if [ $how = off ]; then bash "$HOOKS/speak-toggle.sh" off >/dev/null; else jq -nc '{prompt:"x"}' | bash "$HOOKS/speak-interrupt.sh" >/dev/null; fi
+      wait "$APID"; sleep 0.5; n=$(alive_speakers)
+      [ "$n" = 0 ] && ok "stop: $how during cleaning → no speech left running" || bad "stop: $how during cleaning → no speech left running" "live speakers: $n (pids: $(tr '\n' ' ' < "$SPEAK_OUT.pids"))"
+      pkill -f "$SLOW" 2>/dev/null
+    done
+
+    # (6) lone surrogate escape in hook JSON doesn't silence the reply
+    fresh; voice_on
+    printf '%s' '{"stop_hook_active":false,"last_assistant_message":"Surrogate \ud800 still spoken."}' | stop_hook
+    wait_spoken; [[ "$(spoken)" == *"still spoken"* ]] && ok "stop: lone \\ud800 in JSON still spoken" || bad "stop: lone \\ud800 in JSON still spoken" "spoken: $(spoken)"
+
     # hook must return promptly even if the speaker is slow (should not block Claude)
     fresh; voice_on; export SPEAK_CMD="$SLOW"
     t0=$(date +%s)
@@ -268,7 +339,7 @@ if want interrupt; then
     SP=$(head -1 "$SPEAK_OUT.pids" 2>/dev/null)
     if [ -z "$SP" ] || ! kill -0 "$SP" 2>/dev/null; then bad "interrupt: speech running before prompt" "no live speaker pid (pids: $(cat "$SPEAK_OUT.pids" 2>/dev/null))"; else
       ok "interrupt: speech running before prompt"
-      jq -nc '{hook_event_name:"UserPromptSubmit",prompt:"wait, stop"}' | bash "$ROOT/$INT"; rc=$?
+      jq -nc '{hook_event_name:"UserPromptSubmit",prompt:"wait, stop"}' | bash "$ROOT/$INT" >/dev/null; rc=$?
       [ $rc = 0 ] && ok "interrupt: hook exits 0" || bad "interrupt: hook exits 0" "rc=$rc"
       sleep 0.5
       kill -0 "$SP" 2>/dev/null && bad "interrupt: own speech killed" "pid $SP still alive" || ok "interrupt: own speech killed"
@@ -279,34 +350,147 @@ if want interrupt; then
 
     # no speech running: still exits 0 and kills nothing
     fresh; voice_on; sleep 30 & SL=$!
-    jq -nc '{hook_event_name:"UserPromptSubmit",prompt:"hi"}' | bash "$ROOT/$INT"; rc=$?
+    jq -nc '{hook_event_name:"UserPromptSubmit",prompt:"hi"}' | bash "$ROOT/$INT" >/dev/null; rc=$?
     { [ $rc = 0 ] && kill -0 "$SL" 2>/dev/null; } && ok "interrupt: no speech → exit 0, nothing killed" || bad "interrupt: no speech → exit 0, nothing killed" "rc=$rc"
     # stale pid file pointing at an unrelated live process (pid reused, start time differs) must not kill it
     mkdir -p "$SPEAK_STATE_DIR"
     echo "$SL Mon Jan  1 00:00:00 2001" > "$SPEAK_STATE_DIR/speak.pid"
-    jq -nc '{hook_event_name:"UserPromptSubmit",prompt:"hi"}' | bash "$ROOT/$INT"
+    jq -nc '{hook_event_name:"UserPromptSubmit",prompt:"hi"}' | bash "$ROOT/$INT" >/dev/null
     kill -0 "$SL" 2>/dev/null && ok "interrupt: stale pid (start-time mismatch) not killed" || bad "interrupt: stale pid (start-time mismatch) not killed" "sleep $SL was killed via stale pid file"
     echo "$SL" > "$SPEAK_STATE_DIR/speak.pid"   # pid with no start time
-    jq -nc '{prompt:"hi"}' | bash "$ROOT/$INT"
+    jq -nc '{prompt:"hi"}' | bash "$ROOT/$INT" >/dev/null
     kill -0 "$SL" 2>/dev/null && ok "interrupt: pid file without start time not killed" || bad "interrupt: pid file without start time not killed" "sleep $SL killed"
-    for junk in "garbage" "-1" "1 x" "0"; do echo "$junk" > "$SPEAK_STATE_DIR/speak.pid"; jq -nc '{prompt:"hi"}' | bash "$ROOT/$INT"; done
+    for junk in "garbage" "-1" "1 x" "0"; do echo "$junk" > "$SPEAK_STATE_DIR/speak.pid"; jq -nc '{prompt:"hi"}' | bash "$ROOT/$INT" >/dev/null; done
     kill -0 "$SL" 2>/dev/null && kill -0 $$ 2>/dev/null && ok "interrupt: junk pid files harmless" || bad "interrupt: junk pid files harmless" "something died"
     kill "$SL" 2>/dev/null; wait "$SL" 2>/dev/null
 
     # interrupt prints nothing (stdout would be injected into the prompt)
     fresh; voice_on; export SPEAK_CMD="$SLOW"
     jq -nc '{stop_hook_active:false,last_assistant_message:"Talking."}' | stop_hook; wait_spoken
-    out=$(jq -nc '{prompt:"x"}' | bash "$ROOT/$INT"); [ -z "$out" ] && ok "interrupt: no stdout" || bad "interrupt: no stdout" "stdout: $out"
+    out=$(jq -nc '{prompt:"x"}' | bash "$ROOT/$INT")
+    { [ "$(printf '%s\n' "$out" | grep -c .)" = 1 ] && printf '%s' "$out" | jq -e '.hookSpecificOutput.hookEventName == "UserPromptSubmit" and (.hookSpecificOutput.additionalContext | type == "string" and length > 0)' >/dev/null 2>&1; } \
+      && ok "interrupt: speech on → exactly one JSON line with additionalContext" || bad "interrupt: speech on → exactly one JSON line with additionalContext" "stdout: $out"
+    voice_off; out=$(jq -nc '{prompt:"x"}' | bash "$ROOT/$INT"); voice_on
+    [ -z "$out" ] && ok "interrupt: speech off → no stdout" || bad "interrupt: speech off → no stdout" "stdout: $out"
     # speech still killed even if flag was turned off by removing it directly
     jq -nc '{stop_hook_active:false,last_assistant_message:"Talking again."}' | stop_hook; sleep 0.5
     P=$(tail -1 "$SPEAK_OUT.pids"); rm -f "$SPEAK_STATE_DIR/speak.on"
-    jq -nc '{prompt:"x"}' | bash "$ROOT/$INT"; sleep 0.3
+    jq -nc '{prompt:"x"}' | bash "$ROOT/$INT" >/dev/null; sleep 0.3
     kill -0 "$P" 2>/dev/null && bad "interrupt: kills own speech even with flag off" "pid $P alive" || ok "interrupt: kills own speech even with flag off"
     pkill -f "$SLOW" 2>/dev/null
   fi
 fi
 
 # ============================================================================
+echo "== lock =="
+if want lock; then
+  if ! need speak-common.sh || ! grep -q 'speak.lock' "$HOOKS/speak-common.sh"; then skip "lock tests" "no speak.lock"; else
+    lock_case() { # $1 = name, $2 = setup command run with the lock path
+      fresh; voice_on; export SPEAK_CMD="$SLOW"
+      jq -nc '{stop_hook_active:false,last_assistant_message:"Locked talk."}' | stop_hook; wait_spoken; sleep 0.2
+      local P; P=$(tail -1 "$SPEAK_OUT.pids"); local L="$SPEAK_STATE_DIR/speak.lock"
+      rm -rf "$L"; eval "$2"
+      local t0 t1; t0=$(now_ms); jq -nc '{prompt:"x"}' | bash "$HOOKS/speak-interrupt.sh" >/dev/null; t1=$(now_ms); sleep 0.3
+      local dt=$((t1-t0))
+      { [ $dt -le 1000 ] && ! kill -0 "$P" 2>/dev/null; } && ok "lock: $1 → interrupt ≤1s (${dt}ms) and speech stopped" \
+        || bad "lock: $1 → interrupt ≤1s and speech stopped" "took ${dt}ms, speaker $P alive=$(kill -0 "$P" 2>/dev/null && echo y || echo n)"
+      pkill -f "$SLOW" 2>/dev/null
+    }
+    lock_case "stale symlink to dead pid" 'ln -s "99999 Mon Jan  1 00:00:00 2001" "$L"'
+    lock_case "plain dir at lock path"   'mkdir "$L"'
+    lock_case "dir with future mtime"    'mkdir "$L"; touch -t 203501010000 "$L"'
+    sleep 30 & OWN=$!
+    lock_case "live foreign owner"       'ln -s "$OWN $(lstart_of $OWN)" "$L"'
+    kill -0 "$OWN" 2>/dev/null && ok "lock: live owner process not killed" || bad "lock: live owner process not killed" "owner $OWN died"
+    # Stop (async hook) with a live foreign lock: design waits ≤10s per acquisition, then gives up silently.
+    # Bound 25s = two acquisitions + slack; it must not hang forever or speak through the lock.
+    fresh; voice_on; ln -s "$OWN $(lstart_of $OWN)" "$SPEAK_STATE_DIR/speak.lock"
+    t0=$(now_ms); jq -nc '{stop_hook_active:false,last_assistant_message:"Blocked."}' | stop_hook; dt=$(( $(now_ms) - t0 ))
+    { [ $dt -le 25000 ] && [ -z "$(spoken)" ]; } && ok "lock: Stop with live foreign lock gives up silently (${dt}ms ≤25s)" || bad "lock: Stop with live foreign lock gives up silently ≤25s" "took ${dt}ms spoken: $(spoken)"
+    [ "$(readlink "$SPEAK_STATE_DIR/speak.lock")" = "$OWN $(lstart_of $OWN)" ] && ok "lock: live owner's lock left intact" || bad "lock: live owner's lock left intact" "lock now: $(readlink "$SPEAK_STATE_DIR/speak.lock" 2>&1)"
+    # after a lock-holding hook finishes, the lock is released
+    fresh; voice_on
+    jq -nc '{stop_hook_active:false,last_assistant_message:"Release me."}' | stop_hook; wait_spoken
+    [ ! -e "$SPEAK_STATE_DIR/speak.lock" ] && [ ! -L "$SPEAK_STATE_DIR/speak.lock" ] && ok "lock: released after Stop" || bad "lock: released after Stop" "$(ls -l "$SPEAK_STATE_DIR/speak.lock" 2>&1)"
+    kill "$OWN" 2>/dev/null; wait "$OWN" 2>/dev/null
+  fi
+fi
+
+echo "== quiz (AskUserQuestion) =="
+if want quiz; then
+  if ! need speak-question.sh || ! need speak-answered.sh; then skip "quiz tests" "no speak-question.sh / speak-answered.sh"; else
+    QH() { bash "$HOOKS/speak-question.sh"; }; AH() { bash "$HOOKS/speak-answered.sh"; }
+    wiring=$(jq -r '[.hooks.PreToolUse[]? | select(.matcher=="AskUserQuestion") | .hooks[] | select((.args|join(" "))|test("speak-question")) | .async] | tostring' "$HOOKS/hooks.json")
+    [ "$wiring" = "[true]" ] && ok "quiz: speak-question wired PreToolUse(AskUserQuestion), async" || bad "quiz: speak-question wired PreToolUse(AskUserQuestion), async" "got: $wiring"
+    wiring=$(jq -r '[.hooks.PostToolUse[]? | select(.matcher=="AskUserQuestion") | .hooks[] | select((.args|join(" "))|test("speak-answered"))] | length' "$HOOKS/hooks.json")
+    [ "$wiring" = 1 ] && ok "quiz: speak-answered wired PostToolUse(AskUserQuestion)" || bad "quiz: speak-answered wired PostToolUse(AskUserQuestion)" "count: $wiring"
+
+    QIN() { jq -nc --arg p "$TR" '{session_id:"sess-q1",transcript_path:$p,hook_event_name:"PreToolUse",tool_name:"AskUserQuestion",
+            tool_input:{questions:[{question:"What is the slope of y equals 2x?",options:[{label:"Two"},{label:"One half "}]}]}}'; }
+    fresh; voice_on; TR="$T/quiz.jsonl"
+    printf '%s\n' '{"type":"user","message":{"content":"older prompt"}}' \
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"OLD-TURN text."}]}}' \
+      '{"type":"user","message":{"content":"<command-name>/teach</command-name><command-args>slope</command-args>"}}' \
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Teaching: slope is **rise over run**."}]}}' \
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{}}]}}' > "$TR"
+    out=$(QIN | QH); rc=$?
+    { [ $rc = 0 ] && [ -z "$out" ]; } && ok "quiz: question hook exit 0, no stdout" || bad "quiz: question hook exit 0, no stdout" "rc=$rc out=$out"
+    wait_spoken; s=$(spoken)
+    [[ "$s" == *"Teaching: slope is rise over run."*"What is the slope of y equals 2x?"*"The options are: Two. One half."* ]] \
+      && ok "quiz: speaks turn text, then question, then options" || bad "quiz: speaks turn text, then question, then options" "spoken: $s"
+    [[ "$s" != *OLD-TURN* ]] && ok "quiz: earlier turns not spoken" || bad "quiz: earlier turns not spoken" "spoken: $s"
+    [[ "$s" != *"**"* && "$s" != *AskUserQuestion* && "$s" != *"{"* ]] && ok "quiz: spoken text is cleaned" || bad "quiz: spoken text is cleaned" "spoken: $s"
+
+    # tool_result does not reset the turn; final text spoken once by Stop; teaching text not repeated
+    printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q1","content":"Two"}]}}' \
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Correct, well done."}]}}' >> "$TR"
+    : > "$SPEAK_OUT"
+    jq -nc --arg p "$TR" '{session_id:"sess-q1",transcript_path:$p,stop_hook_active:false,last_assistant_message:"Correct, well done."}' | stop_hook
+    wait_spoken; s=$(spoken)
+    [ "$s" = "Correct, well done." ] && ok "quiz: Stop speaks only the unspoken final text" || bad "quiz: Stop speaks only the unspoken final text" "spoken: $s"
+    : > "$SPEAK_OUT"
+    jq -nc --arg p "$TR" '{session_id:"sess-q1",transcript_path:$p,stop_hook_active:false,last_assistant_message:"Correct, well done."}' | stop_hook
+    sleep 1; [ -z "$(spoken)" ] && ok "quiz: repeated Stop with same text → silent" || bad "quiz: repeated Stop with same text → silent" "spoken: $(spoken)"
+    # a different session's Stop is not deduped against sess-q1
+    jq -nc --arg p "$TR" '{session_id:"sess-other",stop_hook_active:false,last_assistant_message:"Correct, well done."}' | stop_hook
+    wait_spoken; [[ "$(spoken)" == *"Correct, well done."* ]] && ok "quiz: dedupe is per session" || bad "quiz: dedupe is per session" "spoken: $(spoken)"
+    # UserPromptSubmit clears the record
+    jq -nc '{session_id:"sess-q1",prompt:"next"}' | bash "$HOOKS/speak-interrupt.sh" >/dev/null
+    left=$(ls "$SPEAK_STATE_DIR" | grep '^spoken\.sess-q1' )
+    [ -z "$left" ] && ok "quiz: UserPromptSubmit clears spoken record" || bad "quiz: UserPromptSubmit clears spoken record" "left: $left"
+
+    # a block identical to one voiced earlier in the turn, appearing later, is still spoken (position, not content)
+    fresh; voice_on; TR="$T/quiz-rep.jsonl"
+    printf '%s\n' '{"type":"user","message":{"content":"quiz me twice"}}' \
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Correct."}]}}' \
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{}}]}}' > "$TR"
+    QIN | QH; wait_spoken
+    printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q1","content":"Two"}]}}' \
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Correct."}]}}' >> "$TR"
+    : > "$SPEAK_OUT"
+    jq -nc --arg p "$TR" '{session_id:"sess-q1",transcript_path:$p,stop_hook_active:false,last_assistant_message:"Correct."}' | stop_hook
+    wait_spoken; [ "$(spoken)" = "Correct." ] && ok "quiz: repeated identical later block still spoken" || bad "quiz: repeated identical later block still spoken" "spoken: '$(spoken)'"
+
+    # answered hook stops the question speech
+    fresh; voice_on; export SPEAK_CMD="$SLOW"; TR="$T/quiz2.jsonl"
+    printf '%s\n' '{"type":"user","message":{"content":"go"}}' '{"type":"assistant","message":{"content":[{"type":"text","text":"Think first."}]}}' > "$TR"
+    QIN | QH; wait_spoken; P=$(tail -1 "$SPEAK_OUT.pids")
+    out=$(jq -nc '{session_id:"sess-q1",tool_name:"AskUserQuestion",tool_input:{},tool_response:{}}' | AH); rc=$?; sleep 0.3
+    { [ $rc = 0 ] && [ -z "$out" ] && ! kill -0 "$P" 2>/dev/null; } && ok "quiz: answered hook stops speech, exit 0, no stdout" || bad "quiz: answered hook stops speech, exit 0, no stdout" "rc=$rc out=$out speaker $P alive=$(kill -0 "$P" 2>/dev/null && echo y || echo n)"
+    pkill -f "$SLOW" 2>/dev/null
+    # answered hook with no state dir / garbage stdin
+    fresh; out=$(printf 'garbage' | AH); rc=$?
+    { [ $rc = 0 ] && [ -z "$out" ] && [ ! -d "$SPEAK_STATE_DIR" ]; } && ok "quiz: answered hook no-op without state" || bad "quiz: answered hook no-op without state" "rc=$rc out=$out dir=$(ls -d "$SPEAK_STATE_DIR" 2>&1)"
+    # flag off → question hook silent; garbage → exit 0
+    fresh; TR="$T/q3.jsonl"; printf '%s\n' '{"type":"user","message":{"content":"go"}}' > "$TR"
+    QIN | QH; sleep 1; [ -z "$(spoken)" ] && ok "quiz: speech off → question hook silent" || bad "quiz: speech off → question hook silent" "spoken: $(spoken)"
+    fresh; voice_on; printf 'not json' | QH; rc=$?; [ $rc = 0 ] && ok "quiz: question hook garbage stdin → exit 0" || bad "quiz: question hook garbage stdin → exit 0" "rc=$rc"
+    # questions only (no transcript)
+    fresh; voice_on; TR=/nonexistent
+    QIN | QH; wait_spoken; [[ "$(spoken)" == "What is the slope of y equals 2x?"*"Two. One half."* ]] && ok "quiz: questions spoken without transcript" || bad "quiz: questions spoken without transcript" "spoken: $(spoken)"
+  fi
+fi
+
 echo "== toggle =="
 if want toggle; then
   if ! need speak-toggle.sh && [ -z "$VOICE_FLAG" ]; then skip "toggle tests" "no hooks/speak-toggle.sh and VOICE_FLAG unset"; elif ! need speak.sh; then skip "toggle tests" "no speak.sh"; else
@@ -336,7 +520,7 @@ if want toggle; then
     jq -nc '{stop_hook_active:false,last_assistant_message:"Long talk."}' | stop_hook; wait_spoken
     P=$(head -1 "$SPEAK_OUT.pids")
     # status line while speaking
-    o=$(echo '{}' | bash "$HOOKS/status-line.sh"); [[ "$o" == *"🔊 speaking"* ]] && ok "status-line: 🔊 while speaking" || bad "status-line: 🔊 while speaking" "got: $o"
+    o=$(echo '{}' | bash "$HOOKS/status-line.sh"); [[ "$o" == *"🔊 speaking"* ]] && ok "status-line: 🔊 while speaking" || bad "status-line: 🔊 while speaking" "got: '$o' | pidfile: $(cat "$SPEAK_STATE_DIR/speak.pid" 2>&1) | P=$P alive=$(kill -0 "$P" 2>/dev/null && echo y || echo n) lstart-now: $(LC_ALL=C ps -o lstart= -p "$P" 2>&1) | flag: $(ls "$SPEAK_STATE_DIR" 2>&1 | tr '\n' ' ')"
     bash "$HOOKS/speak-toggle.sh" off >/dev/null; sleep 0.3
     kill -0 "$P" 2>/dev/null && bad "toggle: off kills in-progress speech" "pid $P alive" || ok "toggle: off kills in-progress speech"
     o=$(echo '{}' | bash "$HOOKS/status-line.sh"); [[ "$o" != *speech* && "$o" != *speaking* ]] && ok "status-line: no badge when off" || bad "status-line: no badge when off" "got: $o"
@@ -355,24 +539,39 @@ echo "== permissions (allowed-tools vs commands run) =="
 # Literal glob match of each Bash(...) pattern against each command exactly as the skill writes it,
 # and with ${CLAUDE_PLUGIN_ROOT} expanded. Claude Code's `*` is a wildcard like a shell glob.
 perm_patterns() { awk 'NR==1&&/^---/{f=1;next} f&&/^---/{exit} f' "$1" | grep -o 'Bash([^)]*)' | sed 's/^Bash(//; s/)$//'; }
-perm_commands() { # every line/inline span that invokes a hooks/*.sh script
-  grep -o 'bash [^`]*hooks/[A-Za-z0-9_.-]*\.sh"\{0,1\}[^`]*' "$1" | sed 's/[[:space:]]*$//' | sort -u; }
+perm_commands() { # every line/inline span in the body (not frontmatter) that invokes a hooks/*.sh script
+  awk 'NR==1&&/^---/{f=1;next} f&&/^---/{f=0;next} !f' "$1" | grep -o 'bash [^`]*hooks/[A-Za-z0-9_.-]*\.sh"\{0,1\}[^`]*' | sed 's/[[:space:]]*$//' | sort -u; }
 perm_match() { local cmd="$1" pat; while IFS= read -r pat; do [ -n "$pat" ] || continue
     pat="${pat//\?/\\?}"; pat="${pat//\[/\\[}"
     [[ "$cmd" == $pat ]] && return 0; done <<<"$2"; return 1; }
 if want perm; then
-  for sk in speak-on speak-off teach; do
+  for sk in speak-on speak-off; do
     f="$ROOT/skills/$sk/SKILL.md"; [ -f "$f" ] || { bad "perm: skills/$sk exists" "missing"; continue; }
     pats=$(perm_patterns "$f"); cmds=$(perm_commands "$f")
-    [ -n "$cmds" ] || { bad "perm: $sk runs a hooks script" "no 'bash …hooks/*.sh' command found"; continue; }
+    if [ -z "$cmds" ]; then
+      [ "$sk" = teach ] && { skip "perm: teach speech-status check" "teach no longer runs a hooks script"; continue; }
+      bad "perm: $sk runs a hooks script" "no 'bash …hooks/*.sh' command found"; continue; fi
     while IFS= read -r c; do
       e="${c//\$\{CLAUDE_PLUGIN_ROOT\}/$ROOT}"
-      if perm_match "$c" "$pats" && perm_match "$e" "$pats"; then ok "perm: $sk allows: $c"
+      # as written: ${CLAUDE_PLUGIN_ROOT} is substituted in rule and command alike, or in neither
+      if perm_match "$c" "$pats"; then ok "perm: $sk allows: $c"
       else bad "perm: $sk allows: $c" "allowed-tools patterns: ${pats:-<none>}"$'\n'"command as written: $c"$'\n'"expanded: $e"; fi
     done <<<"$cmds"
   done
+  # patterns must not approve other code. Claude Code: "Bash rules match the whole command text, with * standing
+  # in for any text" (code.claude.com/docs/en/permissions), so a * right after `bash` can absorb `-c '<code>'`.
+  for pair in "speak-on:on" "speak-off:off"; do
+    sk="${pair%%:*}"; arg="${pair#*:}"; f="$ROOT/skills/$sk/SKILL.md"; [ -f "$f" ] || continue
+    pats=$(perm_patterns "$f"); hit=""
+    # (a different script at another path can't be excluded portably, since the plugin root varies; not tested)
+    for evil in "bash -c 'touch /tmp/pwned' \"\${CLAUDE_PLUGIN_ROOT}/hooks/speak-toggle.sh\" $arg" \
+                "bash --rcfile /tmp/evil -i \"\${CLAUDE_PLUGIN_ROOT}/hooks/speak-toggle.sh\" $arg"; do
+      perm_match "$evil" "$pats" && hit="$hit"$'\n'"matches: $evil"
+    done
+    [ -z "$hit" ] && ok "perm: $sk pattern rejects injected commands" || bad "perm: $sk pattern rejects injected commands" "patterns: $pats$hit"
+  done
   # patterns must not be broader than the toggle (no bare Bash, no Bash(*), no Bash(bash *))
-  for sk in speak-on speak-off teach; do
+  for sk in speak-on speak-off teach; do   # teach included: it must not grant broad Bash either
     f="$ROOT/skills/$sk/SKILL.md"; [ -f "$f" ] || continue
     broad=$(awk 'NR==1&&/^---/{f=1;next} f&&/^---/{exit} f' "$f" | grep -E 'allowed-tools:.*(Bash([,[:space:]]|$)|Bash\(\*\)|Bash\(bash \*\))')
     [ -z "$broad" ] && ok "perm: $sk allowed-tools not over-broad" || bad "perm: $sk allowed-tools not over-broad" "$broad"
