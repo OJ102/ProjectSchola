@@ -31,10 +31,11 @@ python3 spikes/ocr_compare.py --methods tesseract,applevision,docling,vision
 | scan (degraded) | 0.963* / 10.6 s | 0.863 / 19.5 s | 0.978 / 0.8 s | **0.985** / 1.2 s |
 | math page (words only) | 0.898† / 9.1 s | 0.969 / 14.9 s | 0.944 / 0.7 s | 0.927 / 1.1 s |
 | table page | 0.840 / 8.5 s | 0.805 / 12.0 s | 0.749 / 0.7 s | 0.855 / 1.1 s |
-| slide | **0.829** / 5.9 s | 0.732 / 14.1 s | 0.732 / 0.5 s | 0.732 / 0.2 s |
-| chalkboard keyframe | **1.000** / 7.3 s | 0.333 / 12.0 s | 0.933 / 0.3 s | 0.600 / 0.2 s |
+| slide (n=33 words) | **0.939** / 5.9 s | 0.909 / 14.1 s | 0.909 / 0.5 s | 0.909 / 0.2 s |
+| chalkboard keyframe (n=15 words) | **1.000** / 7.3 s | 0.333 / 12.0 s | 0.933 / 0.3 s | 0.600 / 0.2 s |
 
 \* Vision's "errors" on prose are mostly improvements over the text layer: it joins line-break hyphens ("super vised" → "supervised"), drops footnote markers, and describes the note-box icon. Its real fidelity on prose is about 1.0.
+Slide scores were corrected after tester found its truth file listed the equation in two forms (the ceiling was ~0.8); the truth now has one form. The words-only gap on the slide is small, and vision's edge is the exact LaTeX (hand-scored below).
 † The word metric penalizes LaTeX (`\theta` vs `θ`), so math is judged by hand below.
 
 ### Hand-scored fidelity (I checked each output against the image)

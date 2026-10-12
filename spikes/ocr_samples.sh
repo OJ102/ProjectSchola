@@ -33,7 +33,7 @@ for t in slide board; do cp "$here/fixtures-src/$t.tex" "$tmp/"; (cd "$tmp" && p
 pdftoppm -r 110 -png -singlefile "$tmp/slide.pdf" "$out/slide"
 printf '%s\n' "Gradient Descent in Three Steps" \
   "Compute the gradient of the loss with respect to the weights." \
-  'Step against the gradient: w <- w - eta grad L(w)   [LaTeX: w \leftarrow w - \eta \nabla L(w)]' \
+  'Step against the gradient: w <- w - eta grad L(w).' \
   "Repeat until the validation loss stops improving." > "$out/slide.truth.txt"
 pdftoppm -r 150 -png -singlefile "$tmp/board.pdf" "$tmp/board"
 ffmpeg -loglevel error -y -i "$tmp/board.png" -vf "rotate=-1.5*PI/180:fillcolor=0x2f4f3a,gblur=sigma=1.2,noise=alls=18:allf=t" -q:v 12 "$out/board.jpg"
