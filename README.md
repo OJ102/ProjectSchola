@@ -40,7 +40,7 @@ In a world overflowing with static tutorials, Project Schola stands out by offer
    In your session, simply type: `/teach Python` (or any topic of your choice)
 
 ### Optional: Status Line Indicator
-Add the following to your settings to show a 🗒️ indicator when the markdown logger is active:
+Add the following to your settings to show a 🗒️ indicator when the markdown logger is active and a 🔈/🔊 speech badge:
 ```json
 {
   "statusLine": {
@@ -50,9 +50,21 @@ Add the following to your settings to show a 🗒️ indicator when the markdown
 }
 ```
 
+## 🎙️ Voice mode
+
+Talk to the teacher and hear it answer back.
+
+- **Speech in:** use Claude Code's built-in `/voice` dictation. Hold **Space** to talk, release, then press **Enter** to send. It doesn't auto-submit, so you can fix the transcript first.
+- **Speech out:** run `/speak-on` to have every reply read aloud with macOS `say`, and `/speak-off` to stop. Markdown, code, tables, links, LaTeX and diagrams are left out of what's spoken (they stay on screen). In a `/teach` session the teacher switches to short, spoken-style turns that end on the check question.
+- **Interrupting:** submitting new input stops the reply that is being read. Only this plugin's own speech is stopped, never other `say` processes.
+- **Use headphones** so the microphone doesn't pick up the teacher's voice.
+- With the status line below enabled, it shows 🔈 when speech is on and 🔊 while speaking.
+
+Speech state is kept in `~/.claude/learn-voice-teacher/` (override with `SPEAK_STATE_DIR`). `SPEAK_CMD` replaces `say`, for example `SPEAK_CMD="say -v Samantha -r 190"`. The text arrives on stdin.
+
 ## ⚙️ System Requirements
 
-- **macOS** (for the `say` command in voice mode)
+- **macOS** for speech out (`say`); a microphone for `/voice`
 - **Dependencies:**
   ```bash
   brew install mermaid-cli librsvg jq
@@ -60,7 +72,7 @@ Add the following to your settings to show a 🗒️ indicator when the markdown
 
 ## 🧠 The Philosophy
 
-This project is a testament to the power of **Agentic AI** in education. By breaking down the teaching process into modular skills (`skills/teach/`, `skills/visualize/`, `skills/md-log/`), the system remains extensible and highly customizable. 
+This project is a testament to the power of **Agentic AI** in education. By breaking down the teaching process into modular skills (`skills/teach/`, `skills/visualize/`, `skills/md-log/`, `skills/speak-on/`, `skills/speak-off/`), the system remains extensible and highly customizable. 
 
 Feel free to explore the code, test the teaching loop, and see how AI can be engineered to build intelligent, state-aware applications.
 
