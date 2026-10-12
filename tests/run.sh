@@ -4,6 +4,11 @@
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOOKS="$ROOT/hooks"
 FILTER="${1:-}"
+
+# Hermetic env: drop anything from the caller's shell the hooks read, so results don't depend on who runs us.
+for v in $(env | grep -oE '^(SPEAK_[A-Za-z0-9_]*|STUB_[A-Za-z0-9_]*|OBSIDIAN_[A-Za-z0-9_]*|CLAUDE_PLUGIN_[A-Za-z0-9_]*|VOICE_FLAG)='); do unset "${v%=}"; done
+export LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+echo "suite: $(basename "$0") root=$ROOT bash=$BASH_VERSION hooks=$(ls "$ROOT"/hooks/*.sh | wc -l | tr -d ' ')"
 PASS=0; FAIL=0; SKIP=0; FAILED=()
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/schola-tests.XXXXXX")
@@ -270,7 +275,7 @@ if want interrupt; then
       kill -0 "$BY" 2>/dev/null && ok "interrupt: unrelated speaker-like process survives" || bad "interrupt: unrelated speaker-like process survives" "bystander $BY died"
       kill -0 "$SL" 2>/dev/null && ok "interrupt: unrelated sleep survives" || bad "interrupt: unrelated sleep survives" "sleep $SL died"
     fi
-    kill "$BY" "$SL" 2>/dev/null; pkill -f "$SLOW" 2>/dev/null
+    kill "$BY" "$SL" 2>/dev/null; wait "$BY" "$SL" 2>/dev/null; pkill -f "$SLOW" 2>/dev/null
 
     # no speech running: still exits 0 and kills nothing
     fresh; voice_on; sleep 30 & SL=$!
@@ -286,7 +291,7 @@ if want interrupt; then
     kill -0 "$SL" 2>/dev/null && ok "interrupt: pid file without start time not killed" || bad "interrupt: pid file without start time not killed" "sleep $SL killed"
     for junk in "garbage" "-1" "1 x" "0"; do echo "$junk" > "$SPEAK_STATE_DIR/speak.pid"; jq -nc '{prompt:"hi"}' | bash "$ROOT/$INT"; done
     kill -0 "$SL" 2>/dev/null && kill -0 $$ 2>/dev/null && ok "interrupt: junk pid files harmless" || bad "interrupt: junk pid files harmless" "something died"
-    kill "$SL" 2>/dev/null
+    kill "$SL" 2>/dev/null; wait "$SL" 2>/dev/null
 
     # interrupt prints nothing (stdout would be injected into the prompt)
     fresh; voice_on; export SPEAK_CMD="$SLOW"
@@ -346,6 +351,34 @@ if want toggle; then
 fi
 
 # ============================================================================
+echo "== permissions (allowed-tools vs commands run) =="
+# Literal glob match of each Bash(...) pattern against each command exactly as the skill writes it,
+# and with ${CLAUDE_PLUGIN_ROOT} expanded. Claude Code's `*` is a wildcard like a shell glob.
+perm_patterns() { awk 'NR==1&&/^---/{f=1;next} f&&/^---/{exit} f' "$1" | grep -o 'Bash([^)]*)' | sed 's/^Bash(//; s/)$//'; }
+perm_commands() { # every line/inline span that invokes a hooks/*.sh script
+  grep -o 'bash [^`]*hooks/[A-Za-z0-9_.-]*\.sh"\{0,1\}[^`]*' "$1" | sed 's/[[:space:]]*$//' | sort -u; }
+perm_match() { local cmd="$1" pat; while IFS= read -r pat; do [ -n "$pat" ] || continue
+    pat="${pat//\?/\\?}"; pat="${pat//\[/\\[}"
+    [[ "$cmd" == $pat ]] && return 0; done <<<"$2"; return 1; }
+if want perm; then
+  for sk in speak-on speak-off teach; do
+    f="$ROOT/skills/$sk/SKILL.md"; [ -f "$f" ] || { bad "perm: skills/$sk exists" "missing"; continue; }
+    pats=$(perm_patterns "$f"); cmds=$(perm_commands "$f")
+    [ -n "$cmds" ] || { bad "perm: $sk runs a hooks script" "no 'bash …hooks/*.sh' command found"; continue; }
+    while IFS= read -r c; do
+      e="${c//\$\{CLAUDE_PLUGIN_ROOT\}/$ROOT}"
+      if perm_match "$c" "$pats" && perm_match "$e" "$pats"; then ok "perm: $sk allows: $c"
+      else bad "perm: $sk allows: $c" "allowed-tools patterns: ${pats:-<none>}"$'\n'"command as written: $c"$'\n'"expanded: $e"; fi
+    done <<<"$cmds"
+  done
+  # patterns must not be broader than the toggle (no bare Bash, no Bash(*), no Bash(bash *))
+  for sk in speak-on speak-off teach; do
+    f="$ROOT/skills/$sk/SKILL.md"; [ -f "$f" ] || continue
+    broad=$(awk 'NR==1&&/^---/{f=1;next} f&&/^---/{exit} f' "$f" | grep -E 'allowed-tools:.*(Bash([,[:space:]]|$)|Bash\(\*\)|Bash\(bash \*\))')
+    [ -z "$broad" ] && ok "perm: $sk allowed-tools not over-broad" || bad "perm: $sk allowed-tools not over-broad" "$broad"
+  done
+fi
+
 echo "== docs =="
 if want docs; then
   grep -q '^## Voice mode' "$ROOT/skills/teach/SKILL.md" && ok "docs: teach SKILL has Voice mode section" || bad "docs: teach SKILL has Voice mode section" "missing heading"
