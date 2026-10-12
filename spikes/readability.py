@@ -12,13 +12,25 @@ The chosen subtree is serialized back to HTML and converted with pandoc to
 GitHub Markdown. Heading ids are kept for URL#anchor locators.
 Prints a JSON report: title, words, headings, method, and js_required when
 the page is a script shell with almost no text (fail cleanly, no guessing).
+Hidden elements (hidden attribute, aria-hidden, display:none, visibility,
+font-size:0, opacity:0, same-colour text, off-screen; inline or via the page's
+<style> rules) are dropped; screen-reader-only text is kept (decision 11).
+Exit 3 = needs JavaScript, exit 4 = too slow (30 s wall clock).
 """
 import html
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 from html.parser import HTMLParser
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hidden import css_hidden_selectors, is_hidden  # noqa: E402
+from srcnorm import neutralize  # noqa: E402
+
+TIME_LIMIT = 30  # seconds; past this the extractor exits with too_slow
 
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 DROP_TAGS = {"script", "style", "noscript", "svg", "form", "iframe", "button", "nav", "aside", "footer",
@@ -95,7 +107,7 @@ def find(n, pred):
     return [x for x in walk(n) if pred(x)]
 
 
-def clean(n):
+def clean(n, selectors=frozenset()):
     keep = []
     for c in n.children:
         if c.tag == "#text":
@@ -104,7 +116,7 @@ def clean(n):
         cls = (c.attrs.get("class") or "") + " " + (c.attrs.get("id") or "")
         eid = c.attrs.get("id") or ""
         role = c.attrs.get("role") or ""
-        hidden = "hidden" in c.attrs or c.attrs.get("aria-hidden") == "true"
+        hidden = is_hidden(c.tag, {k: v or "" for k, v in c.attrs.items()}, selectors)
         if c.tag in DROP_TAGS or role in ("navigation", "complementary", "contentinfo", "banner", "dialog") or hidden:
             continue
         if c.tag == "header" and not find(c, lambda x: x.tag == "h1"):
@@ -112,7 +124,7 @@ def clean(n):
         if c.tag not in ("article", "main", "body", "html") and (
                 NEG.search(eid) or (NEG.search(cls) and not POS.search(cls))):
             continue
-        clean(c)
+        clean(c, selectors)
         keep.append(c)
     n.children = keep
 
@@ -182,7 +194,9 @@ def extract(raw):
     scripts = len(find(root, lambda x: x.tag == "script"))
     raw_words = len(text_of(root).split())
     body = next(iter(find(root, lambda x: x.tag == "body")), root)
-    clean(body)
+    # the page's own <style> rules that hide content (decision 11)
+    css = "".join(text_of(x) for x in find(root, lambda x: x.tag == "style"))
+    clean(body, frozenset(css_hidden_selectors(css)))
     words_all = len(text_of(body).split())
     method, node = None, None
     for tag in ("article", "main"):
@@ -208,6 +222,12 @@ def main():
     a = sys.argv[1:]
     src, out = a[0], a[1]
     raw = open(src, encoding="utf-8", errors="replace").read()
+
+    def too_slow(*_):
+        print(json.dumps({"error": f"too_slow: extraction exceeded {TIME_LIMIT}s", "too_slow": True}))
+        sys.exit(4)
+    signal.signal(signal.SIGALRM, too_slow)
+    signal.alarm(TIME_LIMIT)
     node, info = extract(raw)
     if info.get("js_required"):
         info["error"] = "page needs JavaScript; no main content in the HTML (use the lossy fallback)"
@@ -216,6 +236,7 @@ def main():
     h = serialize(node)
     md = subprocess.run(["pandoc", "-f", "html", "-t", "gfm-raw_html", "--wrap=none"], input=h,
                         capture_output=True, text=True).stdout
+    md = neutralize(md)  # no literal [[ / ]] reaches spans, code blocks included
     heads = [(x.tag, x.attrs.get("id"), text_of(x).strip()[:80]) for x in walk(node) if x.tag in ("h1", "h2", "h3")]
     with open(out, "w", encoding="utf-8") as f:
         f.write(md)

@@ -22,6 +22,13 @@ import urllib.parse
 
 MAX_BYTES = 20 * 1024 * 1024
 MAX_REDIRS = 5
+MAX_HEADERS = 1024 * 1024
+# text charsets we decode; anything else (idna, utf-7, unicode_escape, ...)
+# falls back to UTF-8 with replacement
+CHARSETS = {"utf-8", "utf8", "us-ascii", "ascii", "iso-8859-1", "latin-1", "latin1", "utf-16", "utf-16le",
+            "utf-16be", "utf-32", "shift_jis", "shift-jis", "sjis", "euc-jp", "iso-2022-jp", "euc-kr", "gb2312",
+            "gbk", "gb18030", "big5", "big5-hkscs", "koi8-r", "koi8-u"} | {f"windows-125{i}" for i in range(9)} \
+    | {f"cp125{i}" for i in range(9)} | {f"iso-8859-{i}" for i in range(1, 17)}
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 
 
@@ -37,6 +44,17 @@ def check_host(url):
         raise FetchError("no host")
     if u.username or u.password:
         raise FetchError("credentials in URL not allowed")
+    host = u.hostname
+    # IP literals must be canonical (dotted decimal without leading zeros, or
+    # IPv6): curl and Python disagree on octal/hex/short forms ("0177.0.0.1")
+    labels = host.split(".")
+    if ":" in host or all(re.fullmatch(r"\d+|0x[0-9a-f]*", l) for l in labels if l):
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            raise FetchError(f"non-canonical IP literal refused: {host}")
+        if ip.version == 4 and str(ip) != host:
+            raise FetchError(f"non-canonical IP literal refused: {host}")
     port = u.port or (443 if u.scheme == "https" else 80)
     try:
         infos = socket.getaddrinfo(u.hostname, port, proto=socket.IPPROTO_TCP)
@@ -72,15 +90,21 @@ def fetch_once(url):
     if p.wait() != 0:
         raise FetchError(f"curl failed: {err.strip()[:200]}")
     # split headers (possibly several blocks for 100-continue) from body
-    hdr_end = 0
-    while True:
-        m = re.match(rb"HTTP/[\d.]+ \d{3}.*?\r?\n\r?\n", bytes(buf[hdr_end:hdr_end + 65536]), re.S)
-        if not m:
+    hdr_end, last = 0, None
+    while buf[hdr_end:hdr_end + 5] == b"HTTP/":
+        e = buf.find(b"\r\n\r\n", hdr_end)
+        sep = 4
+        if e < 0:
+            e, sep = buf.find(b"\n\n", hdr_end), 2
+        if e < 0 or e - hdr_end > MAX_HEADERS:
+            raise FetchError("response headers missing or larger than 1 MB")
+        last = (hdr_end, e + sep)
+        is_info = re.match(rb"HTTP/[\d.]+ 1\d\d", bytes(buf[hdr_end:hdr_end + 16]))
+        hdr_end = e + sep
+        if not is_info:
             break
-        last = (hdr_end, hdr_end + m.end())
-        hdr_end += m.end()
-        if not re.match(rb"HTTP/[\d.]+ 1\d\d", m.group(0)):
-            break
+    if last is None:
+        raise FetchError("no HTTP response")
     head = bytes(buf[last[0]:last[1]]).decode("latin-1")
     body = bytes(buf[hdr_end:])
     status = int(re.match(r"HTTP/[\d.]+ (\d{3})", head).group(1))
@@ -115,10 +139,12 @@ def decode(headers, body):
         m = re.search(rb"<meta[^>]+charset=[\"']?([\w-]+)", body[:4096], re.I)
         if m:
             cs = m.group(1).decode("ascii", "replace")
-    try:
-        return body.decode(cs or "utf-8", "replace"), cs or "utf-8"
-    except LookupError:
-        return body.decode("utf-8", "replace"), "utf-8 (fallback)"
+    if cs and cs.lower() in CHARSETS:
+        try:
+            return body.decode(cs, "replace"), cs
+        except (LookupError, UnicodeError):
+            pass
+    return body.decode("utf-8", "replace"), "utf-8" if not cs else f"utf-8 (fallback from {cs})"
 
 
 def main():
