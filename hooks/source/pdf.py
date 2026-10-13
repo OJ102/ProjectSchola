@@ -52,7 +52,7 @@ CODE_LINE = re.compile(r"[{};=<>\[\]]|\w\(|^\s*(def|class|import|from|return|for
                        r"\$|>>>|#|//|let|const|var|function|pip|python)\b")
 LIGATURES = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl",
              "ﬅ": "st", "ﬆ": "st"}
-SUPERSCRIPT_MARK = re.compile(r"^(\d{1,3}|[*†‡§])$")
+SUPERSCRIPT_MARK = re.compile(r"^(\d{1,3}|[*†‡§]),?$")
 TOOL_TIMEOUT = 600
 MAX_IMAGE_PX = 50_000_000   # a page whose images exceed this is not decoded (decision 32)
 MAX_DOC_IMAGE_PX = 1_500_000_000  # decode budget for a whole document (a book of figures uses ~300 MP)
@@ -127,16 +127,31 @@ def make_line(words, stats, w, h, keep_markers):
         return None
     hs = sorted(v[3] - v[1] for v in vis)
     hm = hs[len(hs) // 2]
-    base = sorted(v[3] for v in vis)[len(vis) // 2]
-    kept = []
+    # the line's baseline, from the words that are not candidate markers
+    plain = [v[3] for v in vis if not SUPERSCRIPT_MARK.match(v[4])] or [v[3] for v in vis]
+    base = sorted(plain)[len(plain) // 2]
+    hs_plain = sorted(v[3] - v[1] for v in vis if not SUPERSCRIPT_MARK.match(v[4])) or hs
+    hm = hs_plain[len(hs_plain) // 2]
+    kept, ref = [], None  # ref: the last word that is not a raised number
     for k, wd in enumerate(vis):
         x0, y0, x1, y1, t = wd[:5]
         # a small raised number after a word is a footnote marker
         # ("conversations.21") or an exponent ("mc2", "103"); it is tagged
         # here and resolved per page by resolve_superscripts()
-        if not keep_markers and k > 0 and SUPERSCRIPT_MARK.match(t) and (y1 - y0) < 0.8 * hm \
-                and y1 < base - 0.15 * hm:
-            wd = (x0, y0, x1, y1, SUP + t) + tuple(wd[5:])
+        # (judged against the word before it: a math font can be shorter
+        # than the body font on the same line)
+        # (a run of markers, "1, 2", is judged against the word before the run)
+        m = SUPERSCRIPT_MARK.match(t)
+        if ref is not None and m and not keep_markers:
+            ph = ref[3] - ref[1]
+            pc = (ref[1] + ref[3]) / 2
+            # raised, smaller, and set right after the word (or the marker run)
+            last = kept[-1]
+            if (y1 - y0) < 0.9 * min(hm, ph) and y1 < min(base, ref[3]) - 0.1 * min(hm, ph) \
+                    and (y0 + y1) / 2 < pc - 0.1 * ph and -1 <= x0 - last[2] < 0.6 * ph:
+                kept.append((x0, y0, x1, y1, SUP + m.group(1)) + tuple(wd[5:]))
+                continue
+        ref = wd
         kept.append(wd)
     suspect = any(len(v) > 5 and v[5] for v in kept)
     if suspect:
@@ -158,7 +173,7 @@ def make_line(words, stats, w, h, keep_markers):
 
 
 SUP = "\u2063"  # tags a raised number until the page's footnotes are known
-SUP_RE = re.compile(SUP + r"(\S+)")
+SUP_RE = re.compile(SUP + r"(\d{1,3}|[*\u2020\u2021\u00a7])")
 FOOTNOTE_BODY = re.compile(r"^(\d{1,3})(?:\s+\S|[A-Z])")
 
 
@@ -178,20 +193,24 @@ def resolve_superscripts(pages, stats_key="stats"):
     notes = []
     for p in pages:
         lines = [l for b in p["blocks"] for l in b["lines"]]
+        # a footnote body: smaller type, or (when a quote or symbol glyph
+        # makes its line as tall as body text) in the lower part of the page
         notes.append({m.group(1) for l in lines for m in [FOOTNOTE_BODY.match(l["text"])]
-                      if m and (l["y1"] - l["y0"]) < 0.95 * body})
+                      if m and ((l["y1"] - l["y0"]) < 0.95 * body or
+                                (l["y0"] > 0.6 * p["h"] and (l["y1"] - l["y0"]) <= 1.05 * body))})
     for i, p in enumerate(pages):
         lines = [l for b in p["blocks"] for l in b["lines"]]
         if not any(SUP in l["text"] for l in lines):
             continue
         near = set().union(*notes[max(0, i - 1):i + 2])
 
-        def sub(m):
-            if m.group(1) in near:
-                p[stats_key]["marker_chars"] += len(m.group(1))
-                return ""
-            return "^" + m.group(1)
         for l in lines:
+            def sub(m):
+                if m.group(1) in near:
+                    p[stats_key]["marker_chars"] += len(m.group(1))
+                    l.setdefault("note_refs", []).append(m.group(1))
+                    return ""
+                return "^" + m.group(1)
             l["text"] = SUP_RE.sub(sub, l["text"])
 
 
@@ -515,6 +534,26 @@ def parse_bbox(doc, xpages, ink, clips=None):
             ln = make_line(words, stats, w, h, keep_markers)
             if ln:
                 by_block.setdefault(bk, []).append(ln)
+        # a raised number the text layer put on a line of its own ("day." +
+        # "16") joins the line it is raised beside
+        allx = [l for bk in by_block for l in by_block[bk]]
+        for bk in list(by_block):
+            for ln in list(by_block[bk]):
+                t = ln["text"]
+                if not (t.isdigit() and len(t) <= 3 and (ln["y1"] - ln["y0"]) < 0.9 * med_h):
+                    continue
+                lc, lh_ = (ln["y0"] + ln["y1"]) / 2, ln["y1"] - ln["y0"]
+                host = [o for o in allx if o is not ln and o["x1"] <= ln["x0"] + 2 and ln["x0"] - o["x1"] < 0.6 * med_h
+                        and o["y0"] <= ln["y0"] + 1 and ln["y1"] <= o["y1"] + 1
+                        and lh_ < 0.9 * (o["y1"] - o["y0"]) and lc < (o["y0"] + o["y1"]) / 2 - 0.1 * (o["y1"] - o["y0"])]
+                if host:
+                    hl = max(host, key=lambda o: o["x1"])
+                    hl["text"] += SUP + t
+                    hl["x1"] = max(hl["x1"], ln["x1"])
+                    by_block[bk].remove(ln)
+                    allx.remove(ln)
+            if not by_block[bk]:
+                del by_block[bk]
         if dropped_any:
             blocks = regroup([l for bk in sorted(by_block) for l in by_block[bk]])
         else:
@@ -1060,7 +1099,21 @@ def page_spans(i, page, body_lh, heads, vocab=None):
         kind = block_kind(b, joined, body_lh)
         # TOC dot leaders ("Index . . . . . 497") carry no words; fold them
         t = code_text(b) if kind == "code" else LEADER.sub(" \u2026 ", joined)
+        note_no = None
+        m = FOOTNOTE_BODY.match(t)
+        if m and b["lh"] < body_lh * 0.9 and b["y0"] > 0.5 * h:
+            # a footnote body: its number moves to note_no, so the text (and
+            # any anchor quoted from it) starts at the first word
+            kind, note_no = "footnote", m.group(1)
+            t = t[len(note_no):].lstrip()
+        elif kind == "footnote" and b["y0"] <= 0.5 * h:
+            kind = "para"  # small numbered text high on the page is not a note
         rec = {"text": neutralize(t), "kind": kind}
+        if note_no:
+            rec["note_no"] = note_no
+        refs = [r for l in b["lines"] for r in l.get("note_refs", [])]
+        if refs:
+            rec["note_refs"] = refs
         if any(l.get("suspect") for l in b["lines"]):
             rec["suspect_hidden"] = True
         confs = [l["conf"] for l in b["lines"] if l.get("conf") is not None]
@@ -1423,6 +1476,10 @@ def build(pdf_path, out, opts, cache_dir, log=print):
                    "kind": s["kind"], "text": s["text"], "norm": nt, "sha1": hashlib.sha1(nt.encode()).hexdigest()}
             if s.get("suspect_hidden"):
                 rec["suspect_hidden"] = True
+            if s.get("note_no"):
+                rec["note_no"] = s["note_no"]
+            if s.get("note_refs"):
+                rec["note_refs"] = s["note_refs"]
             if "ocr_conf" in s:
                 rec["ocr"] = pages[i]["ocr"]
                 rec["ocr_conf"] = s["ocr_conf"]
@@ -1435,6 +1492,20 @@ def build(pdf_path, out, opts, cache_dir, log=print):
             totals["captured_chars"] += nsp(s["text"])
         spans.extend(recs)
         spans_by_page[i + 1] = recs
+    # link each footnote marker to its body: the footnote span with that
+    # number on the same page, else the next or previous page
+    for sp in spans:
+        if not sp.get("note_refs"):
+            continue
+        links = []
+        for no in sp.pop("note_refs"):
+            hit = None
+            for pg in (sp["pdf_index"], sp["pdf_index"] + 1, sp["pdf_index"] - 1):
+                hit = next((x["id"] for x in spans_by_page.get(pg, []) if x.get("note_no") == no), None)
+                if hit:
+                    break
+            links.append({"no": no, "span": hit})
+        sp["notes"] = links
     timing["spans"] = round(time.time() - t0, 2)
     check_deadline(deadline, "spans")
 
