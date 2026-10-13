@@ -625,7 +625,7 @@ perm_match() { local cmd="$1" pat; while IFS= read -r pat; do [ -n "$pat" ] || c
     pat="${pat//\?/\\?}"; pat="${pat//\[/\\[}"
     [[ "$cmd" == $pat ]] && return 0; done <<<"$2"; return 1; }
 if want perm; then
-  for sk in speak-on speak-off; do
+  for sk in speak-on speak-off ingest; do
     f="$ROOT/skills/$sk/SKILL.md"; [ -f "$f" ] || { bad "perm: skills/$sk exists" "missing"; continue; }
     pats=$(perm_patterns "$f"); cmds=$(perm_commands "$f")
     if [ -z "$cmds" ]; then
@@ -642,20 +642,20 @@ if want perm; then
   done
   # patterns must not approve other code. Claude Code: "Bash rules match the whole command text, with * standing
   # in for any text" (code.claude.com/docs/en/permissions), so a * right after `bash` can absorb `-c '<code>'`.
-  for pair in "speak-on:on" "speak-off:off"; do
-    sk="${pair%%:*}"; arg="${pair#*:}"; f="$ROOT/skills/$sk/SKILL.md"; [ -f "$f" ] || continue
+  for pair in "speak-on:on:speak-toggle" "speak-off:off:speak-toggle" "ingest:'/tmp/b.pdf':source-ingest"; do
+    sk="${pair%%:*}"; scr="${pair##*:}"; arg="${pair#*:}"; arg="${arg%:*}"; f="$ROOT/skills/$sk/SKILL.md"; [ -f "$f" ] || continue
     pats=$(perm_patterns "$f"); hit=""
     # (a different script at another path can't be excluded portably, since the plugin root varies; not tested)
-    for evil in "bash -c 'touch /tmp/pwned' \"\${CLAUDE_PLUGIN_ROOT}/hooks/speak-toggle.sh\" $arg" \
-                "bash --rcfile /tmp/evil -i \"\${CLAUDE_PLUGIN_ROOT}/hooks/speak-toggle.sh\" $arg" \
-                "bash \"/tmp/evil.sh\" \"\${CLAUDE_PLUGIN_ROOT}/hooks/speak-toggle.sh\" $arg" \
-                "bash \"/tmp/evil.sh\" \"/x/hooks/speak-toggle.sh\" $arg"; do
+    for evil in "bash -c 'touch /tmp/pwned' \"\${CLAUDE_PLUGIN_ROOT}/hooks/$scr.sh\" $arg" \
+                "bash --rcfile /tmp/evil -i \"\${CLAUDE_PLUGIN_ROOT}/hooks/$scr.sh\" $arg" \
+                "bash \"/tmp/evil.sh\" \"\${CLAUDE_PLUGIN_ROOT}/hooks/$scr.sh\" $arg" \
+                "bash \"/tmp/evil.sh\" \"/x/hooks/$scr.sh\" $arg"; do
       perm_match "$evil" "$pats" && hit="$hit"$'\n'"matches: $evil"
     done
     [ -z "$hit" ] && ok "perm: $sk pattern rejects injected commands" || bad "perm: $sk pattern rejects injected commands" "patterns: $pats$hit"
   done
   # patterns must not be broader than the toggle (no bare Bash, no Bash(*), no Bash(bash *))
-  for sk in speak-on speak-off teach; do   # teach included: it must not grant broad Bash either
+  for sk in speak-on speak-off teach ingest; do   # teach included: it must not grant broad Bash either
     f="$ROOT/skills/$sk/SKILL.md"; [ -f "$f" ] || continue
     broad=$(awk 'NR==1&&/^---/{f=1;next} f&&/^---/{exit} f' "$f" | grep -E 'allowed-tools:.*(Bash([,[:space:]]|$)|Bash\(\*\)|Bash\(bash \*\))')
     [ -z "$broad" ] && ok "perm: $sk allowed-tools not over-broad" || bad "perm: $sk allowed-tools not over-broad" "$broad"
@@ -676,6 +676,10 @@ if want docs; then
   refs=$(grep -rln "spike-test" "$ROOT" --exclude-dir=.git --exclude-dir=tests --exclude-dir=adversarial --exclude-dir=.obsidian 2>/dev/null)
   [ -z "$refs" ] && ok "docs: no references to removed skills/spike-test" || bad "docs: no references to removed skills/spike-test" "$refs"
 fi
+
+
+# source mode (increment 1): adapter contract, store safety, scans, real book, git hygiene
+. "$ROOT/tests/source/groups.sh"
 
 echo
 echo "passed=$PASS failed=$FAIL warned=$WARN skipped=$SKIP total=$((PASS+FAIL+WARN))"

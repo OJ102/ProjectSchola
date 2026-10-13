@@ -140,9 +140,15 @@ def make_line(words, stats, w, h, keep_markers):
     suspect = any(len(v) > 5 and v[5] for v in kept)
     if suspect:
         stats["suspect_chars"] += sum(nsp(v[4]) for v in kept if len(v) > 5 and v[5])
+    # words that touch (a gap under an eighth of the line height) are one
+    # word the text layer split at a font change: "model" + "'s"
+    text = kept[0][4]
+    for prev, wd in zip(kept, kept[1:]):
+        touch = -1 <= wd[0] - prev[2] < 0.12 * hm and abs(wd[3] - prev[3]) < 0.5 * hm
+        text += ("" if touch else " ") + wd[4]
     return {"x0": min(v[0] for v in kept), "y0": min(v[1] for v in kept), "x1": max(v[2] for v in kept),
-            "y1": max(v[3] for v in kept), "text": unligature(" ".join(v[4] for v in kept)), "h": hm,
-            "suspect": suspect}
+            "y1": max(v[3] for v in kept), "text": unligature(text), "h": hm, "suspect": suspect,
+            "frags": {v[6] for v in kept if len(v) > 6 and v[6] is not None}}
 
 
 def math_density(text):
@@ -271,15 +277,18 @@ def crop_clips(pdf, n):
     return out
 
 
-def row_chars(xp, y0, y1):
-    """The non-space characters pdftohtml shows on the row y0..y1, left to
-    right, as (char, fragment, char id). Characters, not words: pdftohtml
-    and pdftotext split words differently (font changes, superscripts)."""
-    cy = (y0 + y1) / 2
+def row_chars(xp, x0, y0, x1, y1):
+    """The non-space characters pdftohtml shows on the row y0..y1 within the
+    line's horizontal extent x0..x1, left to right, as (char, fragment,
+    char id). Characters, not words: pdftohtml and pdftotext split words
+    differently (font changes, superscripts). Only fragments that overlap
+    the line (horizontally, and over at least half the smaller height)
+    count, so a line cannot claim text from another column or row."""
     seen, frags = set(), []
     for r in range(int(y0 // 8) - 1, int(y1 // 8) + 2):
         for f in xp["rows"].get(r, []):
-            if id(f) not in seen and f[1] - 1 <= cy <= f[3] + 1:
+            ov = min(f[3], y1) - max(f[1], y0)
+            if id(f) not in seen and ov >= 0.5 * min(f[3] - f[1], y1 - y0) and f[0] < x1 + 2 and f[2] > x0 - 2:
                 seen.add(id(f))
                 frags.append(f)
     frags.sort(key=lambda f: f[0])
@@ -334,22 +343,58 @@ def match_score(words, chars):
     return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() if a else 0.0
 
 
+def merge_same_fragment(lines):
+    """Line pieces on one baseline whose words pdftohtml shows in one
+    fragment are one visible line; pieces from different fragments (two
+    columns) stay apart."""
+    out = []
+    for ln in sorted(lines, key=lambda l: (round(l["y0"]), l["x0"])):
+        p = out[-1] if out else None
+        if p and abs(p["y0"] - ln["y0"]) <= 2 and ln["x0"] >= p["x1"] - 1 and p.get("frags") and \
+                p["frags"] & ln.get("frags", set()):
+            out[-1] = dict(p, x1=max(p["x1"], ln["x1"]), y1=max(p["y1"], ln["y1"]), text=p["text"] + " " + ln["text"],
+                           suspect=p.get("suspect") or ln.get("suspect"), frags=p["frags"] | ln["frags"])
+        else:
+            out.append(ln)
+    return out
+
+
 def regroup(lines):
     """Rebuild blocks from lines after invisible words were removed (they
-    can split one visible paragraph across several text-layer blocks)."""
-    out, cur = [], []
-    for ln in merge_baseline(lines):
+    can split one visible paragraph across several text-layer blocks).
+    Lines are first clustered into columns by horizontal overlap, so two
+    columns never interleave, then grouped by vertical gap."""
+    lines = merge_same_fragment(lines)
+    cols = []
+    for ln in sorted(lines, key=lambda l: l["x0"]):
+        for c in cols:
+            if ln["x0"] < c["x1"] and ln["x1"] > c["x0"]:
+                c["lines"].append(ln)
+                c["x0"], c["x1"] = min(c["x0"], ln["x0"]), max(c["x1"], ln["x1"])
+                break
+        else:
+            cols.append({"x0": ln["x0"], "x1": ln["x1"], "lines": [ln]})
+    out = []
+    for c in cols:
+        cur = []
+        for ln in sorted(c["lines"], key=lambda l: (l["y0"], l["x0"])):
+            if cur:
+                prev = cur[-1]
+                hgt = max(1.0, prev["y1"] - prev["y0"])
+                if ln["y0"] - prev["y1"] > 0.8 * hgt or abs((ln["y1"] - ln["y0"]) - hgt) > 0.3 * hgt:
+                    out.append(block_of(cur))
+                    cur = []
+            cur.append(ln)
         if cur:
-            prev = cur[-1]
-            hgt = max(1.0, prev["y1"] - prev["y0"])
-            if ln["y0"] - prev["y1"] > 0.8 * hgt or abs((ln["y1"] - ln["y0"]) - hgt) > 0.3 * hgt \
-                    or abs(ln["x0"] - prev["x0"]) > 3 * hgt and abs(ln["x0"] - cur[0]["x0"]) > 3 * hgt:
-                out.append(block_of(cur))
-                cur = []
-        cur.append(ln)
-    if cur:
-        out.append(block_of(cur))
+            out.append(block_of(cur))
     return out
+
+
+def vertical(word, med_h):
+    """A rotated word: much taller than the page's typical word height and
+    taller than wide (a horizontal word is about one font size tall)."""
+    x0, y0, x1, y1, t = word[:5]
+    return len(t) > 1 and (y1 - y0) > 2 * med_h and (y1 - y0) > 1.5 * (x1 - x0)
 
 
 def parse_bbox(doc, xpages, ink, clips=None):
@@ -367,6 +412,8 @@ def parse_bbox(doc, xpages, ink, clips=None):
         clip = clips[i] if clips is not None and i < len(clips) else None
         raw_words = [html.unescape(m.group(5)) for m in WORD_RE.finditer(body)]
         keep_markers = math_density(" ".join(raw_words)) > 0.01
+        hs = sorted(float(m.group(4)) - float(m.group(2)) for m in WORD_RE.finditer(body))
+        med_h = hs[len(hs) // 2] if hs else 10.0
         stats = new_stats()
         # gather every text-layer line first; lines that align best with the
         # visible text claim its tokens first, so an invisible word cannot
@@ -377,15 +424,18 @@ def parse_bbox(doc, xpages, ink, clips=None):
                 raw = [(float(m.group(1)), float(m.group(2)), float(m.group(3)), float(m.group(4)),
                         html.unescape(m.group(5))) for m in WORD_RE.finditer(lm.group(1))]
                 if raw:
-                    toks = row_chars(xp, min(r[1] for r in raw), max(r[3] for r in raw)) if xp is not None else None
-                    tl.append([bk, raw, toks, None])
+                    # a line with a rotated word is a rotated line
+                    raw_flat = [] if any(vertical(r, med_h) for r in raw) else raw
+                    toks = row_chars(xp, min(r[0] for r in raw), min(r[1] for r in raw), max(r[2] for r in raw),
+                                     max(r[3] for r in raw)) if xp is not None else None
+                    tl.append([bk, raw, toks, None, raw_flat])
         used = set()
-        for item in sorted(tl, key=lambda it: -match_score(it[1], it[2]) if it[2] is not None else 0):
+        for item in sorted(tl, key=lambda it: -match_score(it[4], it[2]) if it[2] is not None else 0):
             if item[2] is not None:
-                item[3] = visible_words(item[1], item[2], used)
+                item[3] = visible_words(item[4], item[2], used)
         dropped_any = False
         by_block = {}
-        for bk, raw, toks, vis in tl:
+        for bk, raw, toks, vis, raw_flat in tl:
             words = []
             for k, (x0, y0, x1, y1, t) in enumerate(raw):
                 cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
@@ -396,7 +446,17 @@ def parse_bbox(doc, xpages, ink, clips=None):
                     dropped_any = True
                     continue
                 white = False
-                if vis is not None:
+                seen = ink(i, x0, y0, x1, y1, w, h) if ink is not None else None
+                if vis is not None and not raw_flat:
+                    # pdftohtml breaks rotated text into unreliable runs, so a
+                    # vertical word is judged by the page render alone: no ink,
+                    # or no render, means it is not shown
+                    if seen is not True:
+                        stats["total_chars"] += nsp(t)
+                        stats["invisible_chars"] += nsp(t)
+                        dropped_any = True
+                        continue
+                elif vis is not None:
                     f = vis.get(k)
                     if f is None:
                         stats["total_chars"] += nsp(t)
@@ -404,11 +464,10 @@ def parse_bbox(doc, xpages, ink, clips=None):
                         dropped_any = True
                         continue
                     white = f[6]
-                seen = ink(i, x0, y0, x1, y1, w, h) if ink is not None else None
                 # white text on a dark box is fine when the render shows it;
                 # unrendered white text, or any text without ink, is suspect
                 suspect = seen is False or (white and seen is not True)
-                words.append((x0, y0, x1, y1, t, suspect))
+                words.append((x0, y0, x1, y1, t, suspect, id(vis[k]) if vis is not None and k in vis else None))
             ln = make_line(words, stats, w, h, keep_markers)
             if ln:
                 by_block.setdefault(bk, []).append(ln)
@@ -1145,9 +1204,20 @@ def build(pdf_path, out, opts, cache_dir, log=print):
                          deadline)
             clips = crop_clips(pdf, len(xpages))
             if rb.returncode == 0:
-                pages = parse_bbox(rb.stdout.decode("utf-8", "replace"), xpages, ink, clips)
+                doc = rb.stdout.decode("utf-8", "replace")
+                ntext = doc.count("<page width=")
+                expect = max(ntext, n_tree or 0)
+                if len(xpages) < expect:
+                    # the visibility reference is truncated: pages past its end
+                    # could not be checked for invisible text (fail closed)
+                    raise AdapterError(f"pdftohtml returned {len(xpages)} of {expect} pages, so hidden text cannot "
+                                       "be ruled out; nothing was written")
+                pages = parse_bbox(doc, xpages, ink, clips)
+                del doc
                 text_via = "pdftotext"
             else:
+                if n_tree and len(xpages) < n_tree:
+                    raise AdapterError(f"pdftohtml returned {len(xpages)} of {n_tree} pages; nothing was written")
                 pages, text_via = visible_pages(xpages, None, ink, clips), "pdftohtml"
             ink_checked = len(ink.checked)
             dark = {p: ink.dark_share(p) for p in range(1, len(pages) + 1) if page_text_chars(pages[p - 1]) < 10}
