@@ -299,4 +299,5 @@ def resolve(lines_per_page, dict_labels=None, skip_bare=frozenset()):
     rep["duplicate_labels"] = {l: v for l, v in mm.items() if len(v) > 1}
     rep["sources"] = dict(Counter(fsrc))
     return {"labels": final, "sources": fsrc, "raw": raw, "fit": labels, "fit_sources": sources,
+            "candidates": [[c[2].lower() for c in cs] for cs in cands],
             "multimap": mm, "report": rep}

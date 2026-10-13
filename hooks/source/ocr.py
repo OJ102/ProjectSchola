@@ -16,13 +16,28 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SWIFT_SRC = os.path.join(HERE, "applevision.swift")
 STRIP = 0.13  # fraction of the page height OCRed for page numbers
-TIMEOUT = 120
+
+
+def env_num(name, default, lo, hi):
+    """A numeric knob from the environment, clamped to [lo, hi]."""
+    try:
+        v = float(os.environ.get(name, default))
+    except ValueError:
+        v = default
+    return min(max(v, lo), hi)
+
+
+# decision 32 caps, overridable for tests
+TIMEOUT = env_num("SCHOLA_OCR_PAGE_TIMEOUT_S", 120, 1, 1800)  # seconds per OCR or render call
+# per render: a 14400pt page must not become 900 MP
+MAX_PIXELS = int(env_num("SCHOLA_MAX_RENDER_MP", 25, 0.1, 400) * 1_000_000)
 
 
 def schola_home():
@@ -44,6 +59,7 @@ def applevision_binary(build=True):
     if not build or not swiftc:
         return None
     os.makedirs(bindir, mode=0o700, exist_ok=True)
+    print("building the Apple Vision OCR tool (one-time, up to a few minutes)...", file=sys.stderr, flush=True)
     tmp = exe + f".tmp{os.getpid()}-{threading.get_ident()}"
     try:
         r = subprocess.run([swiftc, "-O", SWIFT_SRC, "-o", tmp], capture_output=True, timeout=600)
@@ -79,8 +95,17 @@ def pick_engine(requested):
     return None, "missing"
 
 
-def render(pdf_path, page, dpi, out_png, crop=None, gray=True):
-    """Render one 1-based page (optionally a crop box in pixels) to PNG."""
+def capped_dpi(w_pt, h_pt, dpi):
+    """Lower the resolution so one render stays within MAX_PIXELS."""
+    px = (w_pt * dpi / 72.0) * (h_pt * dpi / 72.0)
+    if px <= MAX_PIXELS:
+        return dpi
+    return max(1, int(dpi * (MAX_PIXELS / px) ** 0.5))
+
+
+def render(pdf_path, page, dpi, out_png, crop=None, gray=True, timeout=TIMEOUT):
+    """Render one 1-based page (optionally a crop box in pixels) to PNG.
+    Callers pass a dpi already bounded by capped_dpi()."""
     cmd = ["pdftoppm", "-r", str(dpi), "-png", "-f", str(page), "-l", str(page), "-singlefile"]
     if gray:
         cmd.append("-gray")
@@ -88,7 +113,7 @@ def render(pdf_path, page, dpi, out_png, crop=None, gray=True):
         x, y, w, h = crop
         cmd += ["-x", str(x), "-y", str(y), "-W", str(w), "-H", str(h)]
     stem = out_png[:-4] if out_png.endswith(".png") else out_png
-    r = subprocess.run(cmd + [pdf_path, stem], capture_output=True, timeout=TIMEOUT)
+    r = subprocess.run(cmd + [pdf_path, stem], capture_output=True, timeout=timeout)
     return r.returncode == 0 and os.path.exists(stem + ".png")
 
 
@@ -140,6 +165,7 @@ def run_tesseract(png, dpi, psm="3", y_off_pt=0.0):
 
 def ocr_page(pdf_path, page, page_w, page_h, engine, dpi):
     """Full-page OCR of one 1-based page. Returns a list of line dicts."""
+    dpi = capped_dpi(page_w, page_h, dpi)
     with tempfile.TemporaryDirectory(prefix="schola-ocr-") as td:
         png = os.path.join(td, "page.png")
         if not render(pdf_path, page, dpi, png):
@@ -153,7 +179,7 @@ def strip_lines(pdf_path, page, page_w, page_h):
     """OCR only the top and bottom strips (page numbers) with tesseract."""
     if not shutil.which("tesseract"):
         return []
-    dpi = 150
+    dpi = capped_dpi(page_w, page_h * STRIP, 150)
     r = dpi / 72.0
     W, H = int(page_w * r), int(page_h * r)
     strip = max(1, int(H * STRIP))
@@ -161,10 +187,10 @@ def strip_lines(pdf_path, page, page_w, page_h):
     with tempfile.TemporaryDirectory(prefix="schola-strip-") as td:
         for y0 in (0, H - strip):
             png = os.path.join(td, f"s{y0}.png")
-            if not render(pdf_path, page, dpi, png, crop=(0, y0, W, strip)):
-                continue
             try:
+                if not render(pdf_path, page, dpi, png, crop=(0, y0, W, strip)):
+                    continue
                 out += run_tesseract(png, dpi, psm="6", y_off_pt=y0 / r)
-            except (RuntimeError, subprocess.TimeoutExpired):
+            except (RuntimeError, OSError, subprocess.TimeoutExpired):
                 continue
     return out

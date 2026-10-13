@@ -55,8 +55,36 @@ def synthetic_outline(spans, n, labels):
     return ol
 
 
-def build_units(spans, ol, spans_by_page):
-    """Return (units, outline) with span/segment/locator ranges on both."""
+def seg_range(spans, i, j, segments):
+    """Segment range of the span range [i, j): it reaches back to the first
+    segment when i is 0, and forward over segments without spans (blank
+    pages attach to the preceding section) up to the segment before the
+    next range starts, or to the last segment."""
+    N = len(spans)
+    first, last = spans[i]["segment"], spans[j - 1]["segment"]
+    if not segments:
+        return first, last
+    order = {sid: k for k, (sid, _) in enumerate(segments)}
+    a = 0 if i == 0 else order.get(first, 0)
+    if j >= N:
+        b = len(segments) - 1
+    else:
+        nxt = order.get(spans[j]["segment"], 0)
+        b = max(order.get(last, 0), nxt - 1)
+    return segments[a], segments[b]
+
+
+def seg_fields(spans, i, j, segments):
+    if not segments:
+        return {}
+    sa, sb = seg_range(spans, i, j, segments)
+    return {"seg_start": sa[0], "seg_end": sb[0], "loc_start": sa[1], "loc_end": sb[1]}
+
+
+def build_units(spans, ol, spans_by_page, segments=None):
+    """Return (units, outline) with span/segment/locator ranges on both.
+    segments: every segment in order as (id, locator), so that segments
+    without spans are still covered."""
     N = len(spans)
     pos_of = {s["id"]: k for k, s in enumerate(spans)}
     # first global span position at or after each page
@@ -92,8 +120,10 @@ def build_units(spans, ol, spans_by_page):
     for o in ol:
         if o["_pos"] is not None and o["_pos"] < o.get("_end", 0) and N:
             a, b = spans[o["_pos"]], spans[o["_end"] - 1]
-            o.update(span_start=a["id"], span_end=b["id"], seg_start=a["segment"], seg_end=b["segment"],
-                     loc_start=a["locator"], loc_end=b["locator"],
+            sa, sb = seg_range(spans, o["_pos"], o["_end"], segments)
+            o.update(span_start=a["id"], span_end=b["id"], seg_start=sa[0] if segments else sa,
+                     seg_end=sb[0] if segments else sb,
+                     loc_start=sa[1] if segments else a["locator"], loc_end=sb[1] if segments else b["locator"],
                      tokens=tok(sum(len(s["text"]) for s in spans[o["_pos"]:o["_end"]])))
         else:
             o.update(span_start=None, span_end=None, seg_start=None, seg_end=None, loc_start=None, loc_end=None,
@@ -123,6 +153,8 @@ def build_units(spans, ol, spans_by_page):
         if o.get("synthetic") and o["_pos"] not in tops:
             cut[o["_pos"]] = min(cut[o["_pos"]], 0.5)
     groups = [(a, b) for a, b in zip(tops, tops[1:] + [N]) if b > a]
+    if N and sum(len(x["text"]) for x in spans) // 4 < MIN_TOKENS:
+        groups = [(0, N)]  # a source under 3k tokens is one unit (rules 3 and 5)
 
     cum = [0]
     for s in spans:
@@ -186,11 +218,20 @@ def build_units(spans, ol, spans_by_page):
              "span_start": spans[i]["id"], "span_end": spans[j - 1]["id"], "spans": j - i,
              "seg_start": spans[i]["segment"], "seg_end": spans[j - 1]["segment"],
              "loc_start": spans[i]["locator"], "loc_end": spans[j - 1]["locator"],
+             **seg_fields(spans, i, j, segments),
              "tokens": tok(cum[j] - cum[i]),
              "role": "matter" if top is not None and MATTER.match(top["title"] or "") else "body"}
         if small:
             u["undersized"] = "whole_source" if total_tokens < MIN_TOKENS else small
         units.append(u)
+    if not N and segments:
+        # nothing readable (blank or unOCRed pages): the outline still
+        # covers every segment
+        for o in ol:
+            if o["depth"] == 1:
+                o.update(seg_start=segments[0][0], seg_end=segments[-1][0], loc_start=segments[0][1],
+                         loc_end=segments[-1][1])
+                break
     for o in ol:
         for key in ("_pos", "_end", "_k", "start_span_k"):
             o.pop(key, None)

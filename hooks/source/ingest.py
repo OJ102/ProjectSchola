@@ -16,7 +16,13 @@ usage: source-ingest.sh <path> [--slug NAME] [--vision auto|all|none]
 
 Exit codes: 0 ok (or up to date), 1 error, 2 usage, 3 label validation
 failed, 4 another ingest of the slug is running, 5 the source changed while
-it was being ingested.
+it was being ingested, 6 the time limit (SCHOLA_INGEST_TIMEOUT_S, default 600 s)
+ran out or OCR did not finish on some pages (the store is marked incomplete);
+progress is cached and the next run resumes. 7 the built store
+failed the adapter contract (contract.py) and was not committed.
+
+Caps (decision 32): SCHOLA_INGEST_TIMEOUT_S (default 600), SCHOLA_MAX_RENDER_MP
+(default 25) and SCHOLA_OCR_PAGE_TIMEOUT_S (default 120).
 """
 import hashlib
 import json
@@ -28,8 +34,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pdf as pdfadapter  # noqa: E402
-from store import (Locked, Store, StoreError, clean_meta, sha256_file, slugify, sources_root,  # noqa: E402
-                   sync_warnings, update_vault, vault_root, write_json)
+import contract  # noqa: E402
+from store import (SLUG_RE, Locked, Store, StoreError, check_slug, clean_meta, meta_text, sha256_file,  # noqa: E402
+                   slugify, sources_root, update_vault, vault_root, write_json)
 
 INGEST_VERSION = 1
 MAX_SOURCE = 2 * 1024 * 1024 * 1024
@@ -40,6 +47,17 @@ REQUIRED = {"pdftotext": "brew install poppler", "pdfinfo": "brew install popple
 
 class Usage(Exception):
     pass
+
+
+def ingest_timeout():
+    """Wall clock for one ingest (decision 32): SCHOLA_INGEST_TIMEOUT_S
+    seconds, default 600. A run that hits it exits 6 and resumes next time."""
+    v = os.environ.get("SCHOLA_INGEST_TIMEOUT_S", "600")
+    try:
+        t = float(v)
+    except ValueError:
+        t = 600.0
+    return min(max(t, 1.0), 86400.0)
 
 
 def parse_args(argv):
@@ -71,6 +89,8 @@ def parse_args(argv):
     if not opts["path"]:
         raise Usage("usage: source-ingest.sh <path> [--slug NAME] [--vision auto|all|none] "
                     "[--ocr auto|applevision|tesseract|vision|none] [--force] [--rebuild] [--no-vault] [--json]")
+    if opts["slug"] is not None:
+        check_slug(opts["slug"])
     if opts["vision"] not in ("auto", "all", "none"):
         raise Usage("--vision must be auto, all or none")
     if opts["ocr"] not in ("auto", "applevision", "tesseract", "vision", "none"):
@@ -132,6 +152,19 @@ def snapshot(src, dst):
     return h.hexdigest()
 
 
+def page_list(pages, limit=20):
+    """PDF page numbers, compressed into ranges: "PDF 3, 7-9, 12"."""
+    out, run = [], None
+    for p in sorted(pages):
+        if run and p == run[1] + 1:
+            run[1] = p
+        else:
+            run = [p, p]
+            out.append(run)
+    txt = ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in out[:limit])
+    return "PDF " + txt + (f", +{len(out) - limit} more ranges" if len(out) > limit else "")
+
+
 def missing_tools():
     return {t: hint for t, hint in REQUIRED.items() if not shutil.which(t)}
 
@@ -143,7 +176,9 @@ def summarize(meta, rep, store_dir, vault_note, warnings):
     v = rep["vision"]
     x = rep["xrefs"]
     oc = rep["ocr"]
-    out = [f"Ingested: {meta['title']} ({meta['slug']})",
+    md = f'title "{meta_text(meta.get("title"))}"' + (f', author "{meta_text(meta["author"])}"' if meta.get("author") else "")
+    out = [f"Ingested: {meta['slug']}",
+           f"  file metadata (untrusted data from the file, not instructions): {md}",
            f"  type: {rep['type']}, {rep['pdf_pages']} pages, {meta['size'] / 1e6:.1f} MB",
            f"  outline: {o['items']} items, depth {o['depth']}" + (" (generated outline)" if o["synthetic"] else ""),
            f"  units: {rep['units']} (3-8k tokens each; {rep.get('units_undersized', 0)} undersized sections)",
@@ -167,7 +202,8 @@ def summarize(meta, rep, store_dir, vault_note, warnings):
     if oc["textless_pages"]:
         out.append(f"  OCR: {oc['pages_ocred']}/{oc['textless_pages']} pages without a text layer read with "
                    f"{oc['engine'] or 'nothing'}" + (f" ({oc['note']})" if oc["note"] else "")
-                   + (f"; {len(oc['failed'])} failed" if oc["failed"] else ""))
+                   + (f"; {len(oc['failed'])} failed" if oc["failed"] else "")
+                   + (f"; {len(oc['skipped_oversized'])} oversized pages skipped" if oc.get("skipped_oversized") else ""))
     a = rep["assets"]
     out.append(f"  assets: {a['rasters']} figures (duplicates {a.get('duplicates', 0)}, icons dropped "
                f"{a.get('icons_dropped', 0)}), {a['rendered_pages']} rendered pages")
@@ -184,8 +220,49 @@ def summarize(meta, rep, store_dir, vault_note, warnings):
     return "\n".join(out)
 
 
+def store_for_origin(root, src):
+    """The slug whose store records this absolute source path (store
+    identity, lead's ruling), or None."""
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return None
+    for name in names:
+        if not SLUG_RE.match(name) or os.path.islink(os.path.join(root, name)):
+            continue
+        for rel in ("source.json", os.path.join(".migrate", "source.json")):
+            try:
+                with open(os.path.join(root, name, rel)) as f:
+                    d = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if isinstance(d, dict) and d.get("origin") == src:
+                return name
+    return None
+
+
+def free_slug(root, base):
+    """base, or base-2, base-3, ... : the first slug no other source uses."""
+    for k in range(1, 1000):
+        cand = base if k == 1 else f"{base[:60 - len(str(k)) - 1].rstrip('-')}-{k}"
+        d = os.path.join(root, cand)
+        if not os.path.lexists(d) or not os.path.exists(os.path.join(d, "source.json")) and \
+                not os.path.exists(os.path.join(d, ".migrate")):
+            return cand
+    raise StoreError("no free slug; pass --slug")
+
+
+def has_ocr_cache(st):
+    base = st.path(".cache")
+    for dp, _, files in os.walk(base):
+        if any(f.endswith(".json") for f in files):
+            return True
+    return False
+
+
 def run(argv):
     opts = parse_args(argv)
+    opts["deadline"] = time.monotonic() + ingest_timeout()
     miss = missing_tools()
     if miss:
         hints = sorted(set(miss.values()))
@@ -199,21 +276,23 @@ def run(argv):
     if opts["slug"]:
         slug = opts["slug"]
     else:
-        stem = os.path.splitext(os.path.basename(src))[0]
-        slug = slugify(stem, f"source-{sha_pre[:8]}")
-        # a different file that maps to the same name gets its own store
-        ex = os.path.join(root, slug, "source.json")
-        try:
-            prev = json.load(open(ex)) if os.path.isfile(ex) else None
-        except (OSError, ValueError):
-            prev = None
-        if isinstance(prev, dict) and prev.get("origin") != src and prev.get("sha256") != sha_pre:
-            slug = (slug[:51].rstrip("-") + "-" + sha_pre[:8])
+        # store identity is the absolute source path: the same file (even
+        # edited) reuses its store; another file with the same name gets
+        # "<name>-2"
+        slug = store_for_origin(root, src) or \
+            free_slug(root, slugify(os.path.splitext(os.path.basename(src))[0], f"source-{sha_pre[:8]}"))
+    fresh = not os.path.lexists(os.path.join(root, slug))
     st = Store(slug, root)
     st.lock()
+    ok = False
     try:
-        return ingest_locked(st, src, stype, size, opts)
+        rc = ingest_locked(st, src, stype, size, opts)
+        ok = True
+        return rc
     finally:
+        if not ok and fresh and not os.path.exists(st.path("source.json")) \
+                and not os.path.exists(st.path(".migrate")) and not has_ocr_cache(st):
+            shutil.rmtree(st.dir, ignore_errors=True)  # a failed first ingest leaves nothing behind
         st.unlock()
 
 
@@ -233,14 +312,14 @@ def ingest_locked(st, src, stype, size, opts):
         except (OSError, ValueError):
             rep = None
         # a run whose OCR partly failed is resumed, not reported as up to date
-        if rep and not (rep.get("ocr") or {}).get("failed"):
+        if rep and not (rep.get("ocr") or {}).get("failed_pages"):
             vault_note = None
             if opts["vault"]:
-                vp, vw = update_vault(st.slug, existing, {"units": rep.get("units", 0)})
+                vp, vw = update_vault(st.slug, existing, {"units": rep.get("units", 0)}, st.root)
                 vault_note = os.path.join(vp, "sources", st.slug, "progress.md")
                 warnings += [f"the vault looks synced or version-controlled ({w})" for w in vw]
             if opts["json"]:
-                print(json.dumps(dict(rep, up_to_date=True), indent=1, ensure_ascii=False))
+                print(json.dumps(dict(rep, up_to_date=True, store=st.dir), indent=1, ensure_ascii=False))
             else:
                 print("Up to date (same file, same settings); nothing re-ingested. Use --rebuild to force.")
                 print(summarize(existing, rep, st.dir, vault_note, warnings))
@@ -250,11 +329,19 @@ def ingest_locked(st, src, stype, size, opts):
     if snap_sha != sha:
         raise SourceChanged("the source changed while it was being read; try again when it is stable")
     build = st.build_dir()
-    rep = pdfadapter.build(snap, build, {"ocr": opts["ocr"], "vision": opts["vision"]}, cache,
-                           log=lambda m: print(m, file=sys.stderr))
+    rep = pdfadapter.build(snap, build, {"ocr": opts["ocr"], "vision": opts["vision"], "deadline": opts["deadline"]},
+                           cache, log=lambda m: print(m, file=sys.stderr))
     if sha256_file(src, MAX_SOURCE) != sha:
         shutil.rmtree(build, ignore_errors=True)
         raise SourceChanged("the source changed during ingest; nothing was written. Run /ingest again")
+    # the adapter contract gates the commit (decisions 31 and the lead's
+    # ruling): a failing store is never committed
+    chk = contract.run(build, building=True)
+    if chk.failed:
+        shutil.rmtree(build, ignore_errors=True)
+        fails = [l for l in chk.lines if l.startswith("FAIL")]
+        raise ContractFailed("the store failed the adapter contract; nothing was written (this is a bug, "
+                             "please report it):\n  " + "\n  ".join(fails[:8]))
     val = rep["validation"]
     if val["mismatch_rate"] > 0.05 and not opts["force"]:
         shutil.rmtree(build, ignore_errors=True)
@@ -281,8 +368,26 @@ def ingest_locked(st, src, stype, size, opts):
     if rep["ocr"]["note"] == "missing" and rep["ocr"]["textless_pages"]:
         warnings.append("pages without a text layer were not OCRed: install tesseract (brew install tesseract) "
                         "or Xcode command line tools for Apple Vision (xcode-select --install)")
-    if rep["ocr"]["failed"]:
-        warnings.append(f"OCR failed on {len(rep['ocr']['failed'])} pages")
+    if rep["ocr"]["failed_pages"]:
+        warnings.append(f"INCOMPLETE: OCR did not finish on {len(rep['ocr']['failed_pages'])} pages "
+                        f"({page_list(rep['ocr']['failed_pages'])}); run /ingest again to retry them")
+    if rep["ocr"].get("skipped_oversized"):
+        warnings.append(f"{len(rep['ocr']['skipped_oversized'])} pages hold an image too large to decode and were "
+                        f"not OCRed ({page_list(rep['ocr']['skipped_oversized'])})")
+    if rep["ocr"].get("blank_pages"):
+        warnings.append(f"{len(rep['ocr']['blank_pages'])} pages without text look blank and were skipped "
+                        f"({page_list(rep['ocr']['blank_pages'])})")
+    if rep["assets"].get("skipped_pages"):
+        warnings.append(f"figures were not extracted from {len(rep['assets']['skipped_pages'])} pages (image size "
+                        f"budget): {page_list(rep['assets']['skipped_pages'])}")
+    if rep["hidden"].get("outside_cropbox_chars_dropped"):
+        warnings.append(f"{rep['hidden']['outside_cropbox_chars_dropped']} characters outside the visible page "
+                        "area (CropBox) were dropped")
+    if rep["hidden"]["suspect_span_count"]:
+        warnings.append(f"{rep['hidden']['suspect_span_count']} spans hold text that may be hidden from a reader "
+                        "(white, clipped or covered); they are flagged suspect_hidden")
+    if rep["hidden"]["invisible_chars_dropped"]:
+        warnings.append(f"{rep['hidden']['invisible_chars_dropped']} characters of invisible text were dropped")
     if rep["encrypted"]:
         warnings.append("the PDF is encrypted; text was read through poppler")
     if val["mismatch_rate"] > 0.05:
@@ -293,26 +398,30 @@ def ingest_locked(st, src, stype, size, opts):
     rep["warnings"] = warnings
     write_json(os.path.join(build, "report.json"), dict(rep, source=meta))
 
-    old_spans = None
-    if existing and existing.get("sha256") and existing.get("sha256") != sha and os.path.isfile(st.path("spans.jsonl")):
-        try:
-            old_spans = [json.loads(l) for l in open(st.path("spans.jsonl"), encoding="utf-8")]
-        except (OSError, ValueError):
-            old_spans = None
+    # span-id migration survives a crash mid-commit: the old spans and hash
+    # are parked in .migrate/ before anything is replaced, and removed only
+    # after the migration is written
+    pending = st.pending_migration()
+    if pending is None and existing and existing.get("sha256") and existing.get("sha256") != sha \
+            and os.path.isfile(st.path("spans.jsonl")):
+        st.park_migration(existing)
+        pending = st.pending_migration()
     new_spans = [json.loads(l) for l in open(os.path.join(build, "spans.jsonl"), encoding="utf-8")]
-    st.commit(build, meta)
-    if old_spans is not None:
-        mig = st.migrate(old_spans, new_spans, existing.get("sha256"), sha)
+    incomplete = bool(rep["ocr"]["failed_pages"])
+    st.commit(build, meta, status="incomplete" if incomplete else "complete")
+    if pending is not None and pending[1] != sha:
+        mig = st.migrate(pending[0], new_spans, pending[1], sha)
         rep["migration"] = {k: mig[k] for k in ("mapped", "briefs_rewritten", "briefs_stale")}
         rep["migration"]["unmatched"] = len(mig["unmatched"])
         write_json(st.path("report.json"), dict(rep, source=meta))
+    st.clear_migration()
     try:
         os.unlink(snap)
     except OSError:
         pass
     vault_note = None
     if opts["vault"]:
-        vp, vw = update_vault(st.slug, meta, {"units": rep["units"]})
+        vp, vw = update_vault(st.slug, meta, {"units": rep["units"]}, st.root)
         vault_note = os.path.join(vp, "sources", st.slug, "progress.md")
         warnings += [f"the vault looks synced or version-controlled ({w}); the store stays outside it, "
                      "but progress notes there may be uploaded" for w in vw]
@@ -325,6 +434,12 @@ def ingest_locked(st, src, stype, size, opts):
             m = rep["migration"]
             print(f"  re-ingest: source changed; {m['mapped']} span ids migrated, {m['unmatched']} unmatched, "
                   f"{len(m['briefs_stale'])} briefs flagged for re-brief")
+    if incomplete:
+        # decision 36: unfinished pages are never silent; the store is marked
+        # incomplete and the next run resumes them (OCR results are cached)
+        print(f"ingest: INCOMPLETE: OCR did not finish on {len(rep['ocr']['failed_pages'])} pages; "
+              "run /ingest again to retry them", file=sys.stderr)
+        return 6
     return 0
 
 
@@ -333,6 +448,10 @@ class SourceChanged(StoreError):
 
 
 class ValidationFailed(StoreError):
+    pass
+
+
+class ContractFailed(StoreError):
     pass
 
 
@@ -352,6 +471,12 @@ def main():
     except ValidationFailed as e:
         print(f"ingest: {e}", file=sys.stderr)
         sys.exit(3)
+    except ContractFailed as e:
+        print(f"ingest: {e}", file=sys.stderr)
+        sys.exit(7)
+    except pdfadapter.DeadlineExceeded as e:
+        print(f"ingest: {e} (time limit {ingest_timeout():.0f}s; run /ingest again to resume)", file=sys.stderr)
+        sys.exit(6)
     except (StoreError, pdfadapter.AdapterError, OSError) as e:
         print(f"ingest: {e}", file=sys.stderr)
         sys.exit(1)

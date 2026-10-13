@@ -122,7 +122,19 @@ def display_safe(s):
     return CONTROL.sub("", INVISIBLE.sub("", s))
 
 
+BRACKETS = {c: unicodedata.normalize("NFKC", c) for c in map(chr, range(0x80, 0x10000))
+            if unicodedata.normalize("NFKC", c) in ("[", "]")}
+
+
 def neutralize(s):
-    """Stored span text must never contain citation syntax: break "[[" and
-    "]]" with a word joiner (adapter contract, every source type)."""
-    return s.replace("[[", "[\u2060[").replace("]]", "]\u2060]")
+    """Stored text must never contain citation syntax (adapter contract,
+    every source type; decisions 31). Characters that NFKC folds to "[" or
+    "]" (fullwidth and the like) become ASCII first, invisible characters
+    between brackets are removed, then "[[" becomes "[ [" and "]]" becomes
+    "] ]": a plain space survives norm(), NFKC and display_safe(), unlike a
+    zero-width joiner. Repeated until none is left ("[[[" -> "[ [ [")."""
+    s = "".join(BRACKETS.get(c, c) for c in s)
+    s = re.sub(r"(?<=[\[\]])(?:" + INVISIBLE.pattern + r")+(?=[\[\]])", "", s)
+    while "[[" in s or "]]" in s:
+        s = s.replace("[[", "[ [").replace("]]", "] ]")
+    return s

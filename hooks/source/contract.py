@@ -28,7 +28,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from srcnorm import find_tokens, norm  # noqa: E402
+from srcnorm import display_safe, find_tokens, norm, tokens  # noqa: E402
 from units import MAX_TOKENS, MIN_TOKENS  # noqa: E402
 
 ID_RE = re.compile(r"^([A-Za-z0-9:_-]+)\.(\d+)$")
@@ -50,17 +50,37 @@ class Checker:
             self.lines.append(f"ok contract[{self.name}]: {what}")
 
 
+def live_cite(obj):
+    """True if any string inside obj holds "[[" or "]]", as stored or after
+    norm() / display_safe()."""
+    if isinstance(obj, str):
+        return any("[[" in v or "]]" in v for v in (obj, norm(obj), display_safe(obj)))
+    if isinstance(obj, dict):
+        return any(live_cite(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(live_cite(v) for v in obj)
+    return False
+
+
 def anchor_of(text):
-    """An anchor a librarian could quote: the whole span if short, else a
-    run of 6-25 leading words that ends on a plain word boundary."""
-    words = text.split()
-    if len(words) <= 12:
+    """An anchor a librarian could quote under the citation gate's floor
+    (decision 1): the whole span when it is short, else a run of leading
+    words with 6-25 word tokens (or 30+ characters) that ends on a plain
+    word boundary and matches the span."""
+    def words(t):
+        return [w for w in tokens(t) if re.match(r"\w", w)]
+    if len(words(text)) <= 25 and (len(words(text)) < 6 and len(norm(text)) < 30):
         return text
-    for k in list(range(12, 5, -1)) + list(range(13, min(25, len(words)) + 1)):
-        cand = " ".join(words[:k])
-        if re.search(r"[A-Za-z]$", words[k - 1]) and find_tokens(cand, text) is not None:
+    parts = text.split()
+    for k in list(range(min(12, len(parts)), 0, -1)) + list(range(13, len(parts) + 1)):
+        cand = " ".join(parts[:k])
+        n = len(words(cand))
+        if n > 25:
+            continue
+        if (n >= 6 or len(norm(cand)) >= 30) and re.search(r"[A-Za-z0-9]$", parts[k - 1]) \
+                and find_tokens(cand, text) is not None:
             return cand
-    return " ".join(words[:12])
+    return text if len(words(text)) <= 25 else " ".join(parts[:12])
 
 
 def load_verifier(path):
@@ -71,7 +91,9 @@ def load_verifier(path):
     return mod
 
 
-def run(store, verify_path=None):
+def run(store, verify_path=None, building=False):
+    """building: a build directory before commit (no source.json or
+    .gitignore yet); ingest runs this and commits only if it passes."""
     c = Checker(os.path.basename(os.path.normpath(store)))
     j = lambda *p: os.path.join(store, *p)
 
@@ -82,16 +104,17 @@ def run(store, verify_path=None):
         except (OSError, ValueError) as e:
             return e
 
-    sj = load("source.json")
+    sj = {} if building else load("source.json")
     if isinstance(sj, Exception):
         c.check("source.json readable", [str(sj)])
         return c
-    c.check("source.json complete", [
-        None if sj.get("status") == "complete" else "status is not complete",
-        None if re.fullmatch(r"[0-9a-f]{64}", str(sj.get("sha256", ""))) else "bad sha256",
-        *[None if sj.get(k) else f"missing {k}" for k in ("type", "adapter", "origin", "title", "ingest_version")]])
-    c.check(".gitignore ignores everything", [None if os.path.isfile(j(".gitignore")) and
-                                              "*" in open(j(".gitignore")).read().split() else "missing or not '*'"])
+    if not building:
+        c.check("source.json complete", [
+            None if sj.get("status") == "complete" else "status is not complete",
+            None if re.fullmatch(r"[0-9a-f]{64}", str(sj.get("sha256", ""))) else "bad sha256",
+            *[None if sj.get(k) else f"missing {k}" for k in ("type", "adapter", "origin", "title", "ingest_version")]])
+        c.check(".gitignore ignores everything", [None if os.path.isfile(j(".gitignore")) and
+                                                  "*" in open(j(".gitignore")).read().split() else "missing or not '*'"])
 
     try:
         spans = [json.loads(l) for l in open(j("spans.jsonl"), encoding="utf-8") if l.strip()]
@@ -109,8 +132,8 @@ def run(store, verify_path=None):
     c.check("span ids are <segment>.<n>", probs)
     c.check("every span has a locator", [f"{s.get('id')}" for s in spans
                                          if not isinstance(s.get("locator"), str) or not s["locator"].strip()])
-    c.check("no citation syntax in span text", [s["id"] for s in spans if "[[" in s.get("text", "")
-                                                or "]]" in s.get("text", "")])
+    c.check("no citation syntax in any span field, raw or normalized (decision 31)",
+            [s.get("id") for s in spans if live_cite(s)])
     probs = []
     for s in spans:
         if s.get("norm") != norm(s.get("text", "")):
@@ -162,6 +185,14 @@ def run(store, verify_path=None):
                     covered[k] = True
         c.check("outline entries well-formed", probs)
         c.check("outline ranges cover every span", [ids[k] for k, v in enumerate(covered) if not v])
+        seg_pos = {sid: k for k, sid in enumerate(seg_ids)}
+        seg_cov = [False] * len(seg_ids)
+        for o in ol:
+            a, b = seg_pos.get(o.get("seg_start")), seg_pos.get(o.get("seg_end"))
+            if a is not None and b is not None:
+                for k in range(a, b + 1):
+                    seg_cov[k] = True
+        c.check("outline ranges cover every segment", [seg_ids[k] for k, v in enumerate(seg_cov) if not v])
 
     units = load("units.json")
     if isinstance(units, Exception) or not isinstance(units, list):
@@ -206,6 +237,17 @@ def run(store, verify_path=None):
                       if not all(isinstance(x, int) and 1 <= x <= len(pages) for x in v)]
             probs += [f"PDF {p['pdf_index']}: empty label" for p in pages if not str(p.get("label") or "").strip()]
             c.check("labels.json: one 1-based label per page", probs)
+
+    probs = []
+    for name in ((() if building else ("source.json",)) + ("outline.json", "units.json", "labels.json", "xrefs.json",
+                 os.path.join("assets", "index.json"), os.path.join("segments", "index.json"))):
+        d = load(name)
+        if not isinstance(d, Exception) and live_cite(d):
+            probs.append(name)
+    for sid, lines in seg_lines.items():
+        if any(live_cite(l) for l in lines):
+            probs.append(f"segments/{sid}.md")
+    c.check("no citation syntax in any other store file (decision 31)", probs)
 
     ai = load(os.path.join("assets", "index.json"))
     if not isinstance(ai, Exception):
