@@ -56,6 +56,12 @@ n = P('book-nolabels')
 o("labels: book-nolabels (9 pages, <20) falls back to PDF index", all(p['label_source'] == 'fallback' for p in n), [p['label'] for p in n])
 PY
 )
+    # superscript rule: footnote markers stripped only when their body is on the page; else kept as ^N
+    if command -v pdflatex >/dev/null; then
+      mkdir -p "$D/sup"; cp "$TSRC/supers.tex" "$D/sup/s.tex"; (cd "$D/sup" && pdflatex -interaction=nonstopmode s.tex >/dev/null 2>&1)
+      sing "$D/sup/s.pdf" --slug supers >"$D/sup.log" 2>&1 || bad "supers: ingest exit 0" "$(tail -3 "$D/sup.log")"
+      tally "supers: " < <(python3 -I "$TSRC/check_supers.py" "$SCHOLA_SOURCES_DIR/supers" 2>&1)
+    fi
     if [ -d "$SCHOLA_SOURCES_DIR/longbook" ]; then
       tally "contract[longbook]: " < <(python3 -I - "$SCHOLA_SOURCES_DIR/longbook" <<'PY'
 import json, sys
@@ -288,6 +294,10 @@ if want source-aie; then
     tally "aie contract: " < <(python3 -I "$TSRC/check_contract.py" "$SCHOLA_SOURCES_DIR/aie" "$SVERIFY" 2>&1)
     ch=$(python3 -c 'import json,sys;print(" ".join(str(o["pdf_index"]) for o in json.load(open(sys.argv[1])) if o["depth"]==1 and o["title"].startswith("Chapter")))' "$SCHOLA_SOURCES_DIR/aie/outline.json")
     [ "$ch" = "25 73 137 183 235 277 331 387 429 473" ] && ok "aie: 10 chapters at PDF 25..473" || bad "aie: 10 chapters at PDF 25..473" "$ch"
+    fm=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["text"]["footnote_marker_chars"])' "$SCHOLA_SOURCES_DIR/aie/report.json" 2>&1)
+    [ "$fm" = 416 ] && ok "aie: footnote markers still stripped (416 chars)" || bad "aie: footnote markers still stripped (416 chars)" "footnote_marker_chars=$fm"
+    sup=$(grep -c '\^[0-9]' "$SCHOLA_SOURCES_DIR/aie/spans.jsonl")
+    ok "aie: info: $sup spans keep a ^N superscript"
     grep -q 'validation: 10/10' "$D/log" && ok "aie: 10/10 sampled labels validate" || bad "aie: 10/10 sampled labels validate" "$(grep validation "$D/log")"
     grep -qE 'captured (9[5-9]|100)(\.[0-9])?%' "$D/log" && ok "aie: captured >= 95% of text layer" || bad "aie: captured >= 95% of text layer" "$(grep captured "$D/log")"
     t0=$(now_ms); o=$(sing "$AIE" --slug aie 2>&1); t1=$(now_ms)

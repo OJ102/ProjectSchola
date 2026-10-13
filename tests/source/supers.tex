@@ -1,0 +1,13 @@
+% Superscript rule fixture: a raised number is a footnote marker only when a
+% footnote body with that number sits on the same page; otherwise it is kept
+% as "^N" (mc^2, 10^3). Page 2 has a raised 7 with no footnote 7 anywhere.
+\documentclass{article}
+\begin{document}
+Einstein wrote the famous relation E = mc$^2$ for mass and energy in his paper.
+
+A kilometre holds 10$^3$ metres, which every student of units learns early on.
+
+Tides follow the moon closely.\footnote{The sun adds a smaller pull as well.} The next sentence goes on.
+\newpage
+This page shows a raised number with no matching note: value x$^7$ grows fast here.
+\end{document}

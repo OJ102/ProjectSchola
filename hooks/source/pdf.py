@@ -144,8 +144,13 @@ def make_line(words, stats, w, h, keep_markers):
     # words that touch (a gap under an eighth of the line height) are one
     # word the text layer split at a font change: "model" + "'s"
     text = kept[0][4]
-    for prev, wd in zip(kept, kept[1:]):
+    # a small number opening a line is a footnote's own number ("1The sun"):
+    # keep it apart from the text it touches
+    lead_mark = len(kept) > 1 and kept[0][4].isdigit() and (kept[0][3] - kept[0][1]) < 0.8 * hm
+    for k, (prev, wd) in enumerate(zip(kept, kept[1:])):
         touch = -1 <= wd[0] - prev[2] < 0.12 * hm and abs(wd[3] - prev[3]) < 0.5 * hm
+        if k == 0 and lead_mark:
+            touch = False
         text += ("" if touch or wd[4].startswith(SUP) else " ") + wd[4]
     return {"x0": min(v[0] for v in kept), "y0": min(v[1] for v in kept), "x1": max(v[2] for v in kept),
             "y1": max(v[3] for v in kept), "text": unligature(text), "h": hm, "suspect": suspect,
