@@ -131,11 +131,12 @@ def make_line(words, stats, w, h, keep_markers):
     kept = []
     for k, wd in enumerate(vis):
         x0, y0, x1, y1, t = wd[:5]
-        # a small raised number after a word is a footnote marker ("conversations.21")
+        # a small raised number after a word is a footnote marker
+        # ("conversations.21") or an exponent ("mc2", "103"); it is tagged
+        # here and resolved per page by resolve_superscripts()
         if not keep_markers and k > 0 and SUPERSCRIPT_MARK.match(t) and (y1 - y0) < 0.8 * hm \
                 and y1 < base - 0.15 * hm:
-            stats["marker_chars"] += nsp(t)
-            continue
+            wd = (x0, y0, x1, y1, SUP + t) + tuple(wd[5:])
         kept.append(wd)
     suspect = any(len(v) > 5 and v[5] for v in kept)
     if suspect:
@@ -145,10 +146,48 @@ def make_line(words, stats, w, h, keep_markers):
     text = kept[0][4]
     for prev, wd in zip(kept, kept[1:]):
         touch = -1 <= wd[0] - prev[2] < 0.12 * hm and abs(wd[3] - prev[3]) < 0.5 * hm
-        text += ("" if touch else " ") + wd[4]
+        text += ("" if touch or wd[4].startswith(SUP) else " ") + wd[4]
     return {"x0": min(v[0] for v in kept), "y0": min(v[1] for v in kept), "x1": max(v[2] for v in kept),
             "y1": max(v[3] for v in kept), "text": unligature(text), "h": hm, "suspect": suspect,
             "frags": {v[6] for v in kept if len(v) > 6 and v[6] is not None}}
+
+
+SUP = "\u2063"  # tags a raised number until the page's footnotes are known
+SUP_RE = re.compile(SUP + r"(\S+)")
+FOOTNOTE_BODY = re.compile(r"^(\d{1,3})(?:\s+\S|[A-Z])")
+
+
+def resolve_superscripts(pages, stats_key="stats"):
+    """A raised number is a footnote marker only when a footnote body with
+    that number starts a smaller-type line on the same page or a
+    neighbouring one (notes run over a page break); then it is removed.
+    Otherwise it is kept as an exponent: "mc^2", "10^3"."""
+    # body text height: the most common line height in the document
+    cnt = {}
+    for p in pages:
+        for b in p["blocks"]:
+            for l in b["lines"]:
+                k = round(l["y1"] - l["y0"], 1)
+                cnt[k] = cnt.get(k, 0) + 1
+    body = max(cnt.items(), key=lambda kv: kv[1])[0] if cnt else 0
+    notes = []
+    for p in pages:
+        lines = [l for b in p["blocks"] for l in b["lines"]]
+        notes.append({m.group(1) for l in lines for m in [FOOTNOTE_BODY.match(l["text"])]
+                      if m and (l["y1"] - l["y0"]) < 0.95 * body})
+    for i, p in enumerate(pages):
+        lines = [l for b in p["blocks"] for l in b["lines"]]
+        if not any(SUP in l["text"] for l in lines):
+            continue
+        near = set().union(*notes[max(0, i - 1):i + 2])
+
+        def sub(m):
+            if m.group(1) in near:
+                p[stats_key]["marker_chars"] += len(m.group(1))
+                return ""
+            return "^" + m.group(1)
+        for l in lines:
+            l["text"] = SUP_RE.sub(sub, l["text"])
 
 
 def math_density(text):
@@ -411,7 +450,7 @@ def parse_bbox(doc, xpages, ink, clips=None):
         xp = xpages[i] if xpages is not None and i < len(xpages) else None
         clip = clips[i] if clips is not None and i < len(clips) else None
         raw_words = [html.unescape(m.group(5)) for m in WORD_RE.finditer(body)]
-        keep_markers = math_density(" ".join(raw_words)) > 0.01
+        keep_markers = False  # raised numbers are tagged, then resolved per page
         hs = sorted(float(m.group(4)) - float(m.group(2)) for m in WORD_RE.finditer(body))
         med_h = hs[len(hs) // 2] if hs else 10.0
         stats = new_stats()
@@ -1213,6 +1252,7 @@ def build(pdf_path, out, opts, cache_dir, log=print):
                     raise AdapterError(f"pdftohtml returned {len(xpages)} of {expect} pages, so hidden text cannot "
                                        "be ruled out; nothing was written")
                 pages = parse_bbox(doc, xpages, ink, clips)
+                resolve_superscripts(pages)
                 del doc
                 text_via = "pdftotext"
             else:
