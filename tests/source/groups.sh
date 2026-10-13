@@ -290,12 +290,14 @@ if want source-aie; then
     n=$(python3 -c 'import json,sys;print(len([k for k in json.load(open(sys.argv[1])) if k not in ("8","10")]))' "$D/oracle.json")
     [ "$n" = 519 ] && ok "aie: oracle reads 519 footered pages" || bad "aie: oracle reads 519 footered pages" "n=$n"
     tally "aie: " < <(python3 -I "$ROOT/tests/spikes/check_locators.py" book "$SCHOLA_SOURCES_DIR/aie" "$D/oracle.json" 2>&1)
-    tally "aie: " < <(python3 -I "$TSRC/check_aie.py" "$SCHOLA_SOURCES_DIR/aie" "$AIE" 2>&1)
+    FO=""; VPY="$ROOT/.spike-venv/bin/python"
+    if [ -x "$VPY" ] && "$VPY" -c 'import pypdfium2' 2>/dev/null; then
+      "$VPY" -I "$TSRC/footnote_oracle.py" "$AIE" > "$D/fo.json" 2>"$D/fo.err" && FO="$D/fo.json" || bad "aie: footnote oracle runs" "$(tail -3 "$D/fo.err")"
+    else skip "aie: exact footnote oracle" "needs pypdfium2 in .spike-venv"; fi
+    tally "aie: " < <(python3 -I "$TSRC/check_aie.py" "$SCHOLA_SOURCES_DIR/aie" "$AIE" $FO 2>&1)
     tally "aie contract: " < <(python3 -I "$TSRC/check_contract.py" "$SCHOLA_SOURCES_DIR/aie" "$SVERIFY" 2>&1)
     ch=$(python3 -c 'import json,sys;print(" ".join(str(o["pdf_index"]) for o in json.load(open(sys.argv[1])) if o["depth"]==1 and o["title"].startswith("Chapter")))' "$SCHOLA_SOURCES_DIR/aie/outline.json")
     [ "$ch" = "25 73 137 183 235 277 331 387 429 473" ] && ok "aie: 10 chapters at PDF 25..473" || bad "aie: 10 chapters at PDF 25..473" "$ch"
-    fm=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["text"]["footnote_marker_chars"])' "$SCHOLA_SOURCES_DIR/aie/report.json" 2>&1)
-    [ "$fm" = 416 ] && ok "aie: footnote markers still stripped (416 chars)" || bad "aie: footnote markers still stripped (416 chars)" "footnote_marker_chars=$fm"
     sup=$(grep -c '\^[0-9]' "$SCHOLA_SOURCES_DIR/aie/spans.jsonl")
     ok "aie: info: $sup spans keep a ^N superscript"
     grep -q 'validation: 10/10' "$D/log" && ok "aie: 10/10 sampled labels validate" || bad "aie: 10/10 sampled labels validate" "$(grep validation "$D/log")"
