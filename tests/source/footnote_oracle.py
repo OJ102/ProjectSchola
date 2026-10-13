@@ -55,7 +55,7 @@ for i, (text, ch) in enumerate(pages, 1):
             # a footnote body: at a line start, its number is followed by footnote-size text
             nxt = next((c for c in ch[j:j + 6] if not c[0].isspace()), None)
             line_start = k == 0 or ch[k - 1][0] in '\r\n'
-            if line_start and nxt and nxt[0] not in ')]}.,;:+-=^' and body * 0.7 <= nxt[1] < body * 0.9:
+            if line_start and nxt and nxt[0] not in ')]}.,;:+-=^' and body * 0.7 <= nxt[1] < body * 0.85:  # footers run larger (9pt)
                 F.add(num)
             elif ch[k][1] < body * 0.7 or not ch[k][1] < body * 0.85:
                 # superscript size (about 6pt on a 10.5pt body). Compare with the preceding larger letter or

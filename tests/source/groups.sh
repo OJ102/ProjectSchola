@@ -62,6 +62,25 @@ PY
       sing "$D/sup/s.pdf" --slug supers >"$D/sup.log" 2>&1 || bad "supers: ingest exit 0" "$(tail -3 "$D/sup.log")"
       tally "supers: " < <(python3 -I "$TSRC/check_supers.py" "$SCHOLA_SOURCES_DIR/supers" 2>&1)
     fi
+    # adversary's superscript attacks (adversarial/source-mode/inc1/frag, ported): exponents beside real
+    # footnote numbers, a planted fake footnote "3" body that must not strip 10^3 or x^3, markers after a year,
+    # a paren, a quote and "7B". Pass = every truth line appears, after norm(), in the store.
+    if command -v pdflatex >/dev/null; then
+      for n in sup sup2; do
+        mkdir -p "$D/supr-$n"; cp "$TSRC/supr/$n.tex" "$D/supr-$n/$n.tex"; (cd "$D/supr-$n" && pdflatex -interaction=nonstopmode "$n.tex" >/dev/null 2>&1)
+        sing "$D/supr-$n/$n.pdf" --slug "supr-$n" --no-vault >"$D/supr-$n.log" 2>&1 || bad "supr[$n]: ingest exit 0" "$(tail -3 "$D/supr-$n.log")"
+        tally "supr[$n]: " < <(python3 -I - "$SCHOLA_SOURCES_DIR/supr-$n/spans.jsonl" "$TSRC/supr/$n.truth" "$ROOT/hooks/source" <<'EOF4'
+import json, sys
+sys.path.insert(0, sys.argv[3]); from srcnorm import norm
+got = norm(" ".join(json.loads(l)["text"] for l in open(sys.argv[1])))
+for t in open(sys.argv[2]):
+    t = t.strip()
+    if t:
+        print(("ok " if norm(t) in got else "FAIL ") + f"stored: {t}" + ("" if norm(t) in got else f" :: store: {got[:300]}"))
+EOF4
+)
+      done
+    fi
     if [ -d "$SCHOLA_SOURCES_DIR/longbook" ]; then
       tally "contract[longbook]: " < <(python3 -I - "$SCHOLA_SOURCES_DIR/longbook" <<'PY'
 import json, sys

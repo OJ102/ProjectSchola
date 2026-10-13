@@ -132,6 +132,15 @@ def make_line(words, stats, w, h, keep_markers):
     base = sorted(plain)[len(plain) // 2]
     hs_plain = sorted(v[3] - v[1] for v in vis if not SUPERSCRIPT_MARK.match(v[4])) or hs
     hm = hs_plain[len(hs_plain) // 2]
+    # a small number the text layer listed out of place (a marker raised
+    # above a wrapped line's start) moves to just after the word it touches
+    for d in [v for v in vis if SUPERSCRIPT_MARK.match(v[4])]:
+        hosts = [o for o in vis if o is not d and not SUPERSCRIPT_MARK.match(o[4])
+                 and -1 <= d[0] - o[2] < 1.5 and (d[1] + d[3]) / 2 < (o[1] + o[3]) / 2]
+        if hosts:
+            o = min(hosts, key=lambda o: abs(d[0] - o[2]))
+            vis.remove(d)
+            vis.insert(vis.index(o) + 1, d)
     kept, ref = [], None  # ref: the last word that is not a raised number
     for k, wd in enumerate(vis):
         x0, y0, x1, y1, t = wd[:5]
@@ -147,7 +156,7 @@ def make_line(words, stats, w, h, keep_markers):
             pc = (ref[1] + ref[3]) / 2
             # raised, smaller, and set right after the word (or the marker run)
             last = kept[-1]
-            if (y1 - y0) < 0.9 * min(hm, ph) and y1 < min(base, ref[3]) - 0.1 * min(hm, ph) \
+            if (y1 - y0) < 0.95 * min(hm, ph) and y1 < min(base, ref[3]) - 0.1 * min(hm, ph) \
                     and (y0 + y1) / 2 < pc - 0.1 * ph and -1 <= x0 - last[2] < 0.6 * ph:
                 kept.append((x0, y0, x1, y1, SUP + m.group(1)) + tuple(wd[5:]))
                 continue
@@ -159,6 +168,7 @@ def make_line(words, stats, w, h, keep_markers):
     # words that touch (a gap under an eighth of the line height) are one
     # word the text layer split at a font change: "model" + "'s"
     text = kept[0][4]
+    ends = [(kept[0][0], kept[0][1], kept[0][2], kept[0][3], len(text))]  # word boxes, end offsets
     # a small number opening a line is a footnote's own number ("1The sun"):
     # keep it apart from the text it touches
     lead_mark = len(kept) > 1 and kept[0][4].isdigit() and (kept[0][3] - kept[0][1]) < 0.8 * hm
@@ -167,14 +177,45 @@ def make_line(words, stats, w, h, keep_markers):
         if k == 0 and lead_mark:
             touch = False
         text += ("" if touch or wd[4].startswith(SUP) else " ") + wd[4]
+        ends.append((wd[0], wd[1], wd[2], wd[3], len(text)))
     return {"x0": min(v[0] for v in kept), "y0": min(v[1] for v in kept), "x1": max(v[2] for v in kept),
-            "y1": max(v[3] for v in kept), "text": unligature(text), "h": hm, "suspect": suspect,
+            "y1": max(v[3] for v in kept), "text": unligature(text), "h": hm, "suspect": suspect, "ends": ends,
             "frags": {v[6] for v in kept if len(v) > 6 and v[6] is not None}}
 
 
 SUP = "\u2063"  # tags a raised number until the page's footnotes are known
 SUP_RE = re.compile(SUP + r"(\d{1,3}|[*\u2020\u2021\u00a7])")
 FOOTNOTE_BODY = re.compile(r"^(\d{1,3})(?:\s+\S|[A-Z])")
+
+
+def marker_context(before):
+    """Can a raised number after this text be a footnote marker? Never
+    after a digit, "x10"/"×10", a single-letter variable or a closing
+    parenthesis of math ("(x+1)"): those are exponents. Only after a word
+    of two or more characters ending in a letter ("judged", "7B") or after
+    closing punctuation (. , ; : ? ! quotes, or "al.)")."""
+    m = re.search(r"(\S+)$", before)
+    if not m:
+        return False
+    t = m.group(1)
+    if t[-1].isdigit():
+        return False
+    if t.endswith(")"):
+        inner = t[:-1]
+        if inner[-1:] in '.,"\u201d\u2019\'':
+            return True
+        w = re.search(r"([A-Za-z]+)$", inner)
+        return bool(w) and len(w.group(1)) >= 2
+    if t[-1] in '.,;:?!"\u201d\u2019\'':
+        return True
+    w = re.search(r"([A-Za-z]+)$", t)
+    if not w:
+        return False
+    if len(w.group(1)) == 1:
+        # a lone letter ("x", "(n", "O(n") is a variable; after a digit it
+        # is a unit or a size ("7B")
+        return w.start() > 0 and t[w.start() - 1].isdigit()
+    return True
 
 
 def resolve_superscripts(pages, stats_key="stats"):
@@ -206,7 +247,8 @@ def resolve_superscripts(pages, stats_key="stats"):
 
         for l in lines:
             def sub(m):
-                if m.group(1) in near:
+                # (a run "1, 2" is judged by the word before the whole run)
+                if marker_context(SUP_RE.sub("", m.string[:m.start()])) and m.group(1) in near:
                     p[stats_key]["marker_chars"] += len(m.group(1))
                     l.setdefault("note_refs", []).append(m.group(1))
                     return ""
@@ -358,7 +400,7 @@ def row_chars(xp, x0, y0, x1, y1):
     return [(c, f, (id(f), k)) for f in frags for k, c in enumerate(f[5].lower()) if not c.isspace()]
 
 
-def visible_words(words, chars, used):
+def visible_words(words, chars, used, tails=None):
     """Align a text-layer line (pdftotext words, left to right) with the
     visible characters pdftohtml shows on that row that no other line has
     claimed. A word is visible only if every one of its characters aligns:
@@ -366,6 +408,7 @@ def visible_words(words, chars, used):
     word appears elsewhere on the row (decisions 35 and 37). Returns {word
     index: fragment} and marks the matched characters as used."""
     avail = [c for c in chars if c[2] not in used]
+    tails = {} if tails is None else tails
     a, owner = [], []
     for k, wd in enumerate(words):
         for c in wd[4].lower():
@@ -381,16 +424,27 @@ def visible_words(words, chars, used):
         for i, j, n in difflib.SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks():
             for k in range(n):
                 hit[i + k] = j + k
-    need, got, frag = {}, {}, {}
+    need, got, frag, cf = {}, {}, {}, {}
     for pos, k in enumerate(owner):
         need[k] = need.get(k, 0) + 1
         if hit[pos] is not None:
             got[k] = got.get(k, 0) + 1
             frag.setdefault(k, avail[hit[pos]][1])
+            cf.setdefault(k, []).append(avail[hit[pos]][1])
     out = {}
     for k in need:
         if got.get(k) == need[k]:
             out[k] = frag[k]
+            # trailing digits set in a smaller, raised fragment: a footnote
+            # marker or exponent the text layer glued to the word ("text?3")
+            t = re.sub(r"\s", "", words[k][4])
+            m = re.search(r"\d{1,3}$", t)
+            if m and m.start() > 0 and not t[:m.start()][-1].isdigit():
+                tail, head = cf[k][m.start():], cf[k][0]
+                f = tail[0]
+                if all(x is f for x in tail) and f is not head and (f[3] - f[1]) < 0.9 * (head[3] - head[1]) \
+                        and (f[1] + f[3]) / 2 < (head[1] + head[3]) / 2:
+                    tails[k] = (len(m.group(0)), f)
     for pos, k in enumerate(owner):
         if k in out and hit[pos] is not None:
             used.add(avail[hit[pos]][2])
@@ -495,10 +549,13 @@ def parse_bbox(doc, xpages, ink, clips=None):
         used = set()
         for item in sorted(tl, key=lambda it: -match_score(it[4], it[2]) if it[2] is not None else 0):
             if item[2] is not None:
-                item[3] = visible_words(item[4], item[2], used)
+                item.append({})
+                item[3] = visible_words(item[4], item[2], used, item[5])
         dropped_any = False
         by_block = {}
-        for bk, raw, toks, vis, raw_flat in tl:
+        for item in tl:
+            bk, raw, toks, vis, raw_flat = item[:5]
+            tails = item[5] if len(item) > 5 else {}
             words = []
             for k, (x0, y0, x1, y1, t) in enumerate(raw):
                 cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
@@ -530,7 +587,15 @@ def parse_bbox(doc, xpages, ink, clips=None):
                 # white text on a dark box is fine when the render shows it;
                 # unrendered white text, or any text without ink, is suspect
                 suspect = seen is False or (white and seen is not True)
-                words.append((x0, y0, x1, y1, t, suspect, id(vis[k]) if vis is not None and k in vis else None))
+                fid = id(vis[k]) if vis is not None and k in vis else None
+                if k in tails:
+                    # split the glued raised digits into their own word, with
+                    # the box pdftohtml gives them
+                    n, f = tails[k]
+                    words.append((x0, y0, f[0], y1, t[:-n], suspect, fid))
+                    words.append((f[0], f[1], max(f[2], x1), f[3], t[-n:], suspect, fid))
+                    continue
+                words.append((x0, y0, x1, y1, t, suspect, fid))
             ln = make_line(words, stats, w, h, keep_markers)
             if ln:
                 by_block.setdefault(bk, []).append(ln)
@@ -543,13 +608,15 @@ def parse_bbox(doc, xpages, ink, clips=None):
                 if not (t.isdigit() and len(t) <= 3 and (ln["y1"] - ln["y0"]) < 0.9 * med_h):
                     continue
                 lc, lh_ = (ln["y0"] + ln["y1"]) / 2, ln["y1"] - ln["y0"]
-                host = [o for o in allx if o is not ln and o["x1"] <= ln["x0"] + 2 and ln["x0"] - o["x1"] < 0.6 * med_h
-                        and o["y0"] <= ln["y0"] + 1 and ln["y1"] <= o["y1"] + 1
-                        and lh_ < 0.9 * (o["y1"] - o["y0"]) and lc < (o["y0"] + o["y1"]) / 2 - 0.1 * (o["y1"] - o["y0"])]
+                # the word it is raised beside: ends where it starts, taller,
+                # and lower (its centre below the number's)
+                host = [(o, e) for o in allx if o is not ln for e in o.get("ends", [])
+                        if -1 <= ln["x0"] - e[2] < 0.6 * med_h and e[1] <= ln["y0"] + 2 and ln["y1"] <= e[3] + 1
+                        and lh_ < 0.9 * (e[3] - e[1]) and lc < (e[1] + e[3]) / 2 - 0.1 * (e[3] - e[1])]
                 if host:
-                    hl = max(host, key=lambda o: o["x1"])
-                    hl["text"] += SUP + t
-                    hl["x1"] = max(hl["x1"], ln["x1"])
+                    hl, e = min(host, key=lambda oe: abs(ln["x0"] - oe[1][2]))
+                    hl["text"] = hl["text"][:e[4]] + SUP + t + hl["text"][e[4]:]
+                    hl["ends"] = [x if x[4] <= e[4] else x[:4] + (x[4] + len(SUP + t),) for x in hl["ends"]]
                     by_block[bk].remove(ln)
                     allx.remove(ln)
             if not by_block[bk]:

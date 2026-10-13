@@ -88,9 +88,19 @@ out("supers: no '^N' left where footnote N's body is on the same page", not left
 # Exact footnote-marker target from tests/source/footnote_oracle.py (pdfium, independent of poppler):
 # raised numbers whose footnote body is on the same or a neighbouring page are markers; the rest are kept as ^N.
 if oracle is not None:
+    O = Counter((m[0], m[1]) for m in oracle['markers'])
+    St = Counter((int(s['segment'][1:]), str(n['no'])) for s in S for n in (s.get('notes') or []))
+    # Accepted exceptions (lead's ruling 2026-10-13, used only if builder's one generic fix attempt fails):
+    # {(page, number): reason}. Empty means every oracle marker must be stripped and linked.
+    ACCEPTED = {}
+    o_only = sorted(k for k in O if O[k] > St[k] and k not in ACCEPTED)
+    s_only = sorted(k for k in St if St[k] > O[k])
+    out(f"supers: per-marker (page, number) match with oracle ({sum(O.values())} markers, {len(ACCEPTED)} accepted exceptions)",
+        not o_only and not s_only, f"oracle only {o_only}; store only {s_only}")
     fm = (rep.get('text') or {}).get('footnote_marker_chars')
-    out(f"supers: footnote_marker_chars == oracle {oracle['marker_chars']} ({oracle['marker_count']} markers)",
-        fm == oracle['marker_chars'], f"store {fm}")
+    want_chars = oracle['marker_chars'] - sum(len(n) for (pg, n) in ACCEPTED if O[(pg, n)] > St[(pg, n)])
+    out(f"supers: footnote_marker_chars == oracle {oracle['marker_chars']} less accepted exceptions ({want_chars})",
+        fm == want_chars, f"store {fm}")
     alltext = ' '.join(s['text'] for s in S)
     want = Counter()
     for pg, num, before in oracle['kept']:
