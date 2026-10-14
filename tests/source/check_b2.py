@@ -20,6 +20,7 @@ import time
 
 HOOKS_DIR, WORK_DIR = sys.argv[1], sys.argv[2]
 os.makedirs(WORK_DIR, exist_ok=True)
+os.environ["SCHOLA_OFFLINE"] = "1"
 sys.path.insert(0, os.path.join(HOOKS_DIR, "source"))
 from srcnorm import norm  # noqa: E402
 import store as st  # noqa: E402
@@ -274,3 +275,35 @@ cli_cmd = [sys.executable, os.path.join(HOOKS_DIR, "source", "factcheck.py"), ST
 cli_res = subprocess.run(cli_cmd, capture_output=True, text=True)
 o("b2 factcheck CLI exits 0 on valid brief", cli_res.returncode == 0, cli_res.stderr)
 o("b2 factcheck CLI prints summary line", "FACTCHECK fc_test mode=strict" in cli_res.stdout, cli_res.stdout)
+
+# -----------------------------------------------------------------------------
+# 7. Robustness Improvements Tests
+# -----------------------------------------------------------------------------
+# 7a. Fact-checker schema safeguard: rejecting when required section emptied
+fc_reject_brief = """## Where
+Ocean Dynamics (pp. 10–11)
+
+## Core claims
+- Valid claim about tides [[cite:p0010.1 "driven by the gravitational pull of the moon"]]
+
+## Quiz seeds
+1. FABRICATED QUIZ SEED ABOUT MARTIAN OCEANS [[cite:p0010.3 "lowest tidal range during quarter moons"]]
+"""
+fc_reject_path = os.path.join(STORE_DIR, "briefs", "fc_reject.md")
+with open(fc_reject_path, "w", encoding="utf-8") as f:
+    f.write(fc_reject_brief)
+
+rep_reject = sfactcheck.check_brief(STORE_DIR, fc_reject_path, strict=True, drop_unsupported=True)
+o("b2 factcheck rejects brief when dropping empties a required section",
+  rep_reject.get("status") == "rejected", rep_reject)
+o("b2 factcheck does not save schema-violating brief",
+  open(fc_reject_path, encoding="utf-8").read() == fc_reject_brief)
+
+# 7b. Lazy vision path safety
+try:
+    svision.render_unit_vision(STORE_DIR, "../../evil_unit")
+    evil_ok = False
+except Exception:
+    evil_ok = True
+o("b2 vision rejects path traversal in unit id", evil_ok)
+

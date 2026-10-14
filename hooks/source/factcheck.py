@@ -94,7 +94,9 @@ def evaluate_entailment_rule(claim, span_texts):
     s_toks = set([t for t in tokens(norm(all_span_text))])
 
     if not c_toks:
-        return "supported", "short claim"
+        if norm(claim) and norm(claim) in norm(all_span_text):
+            return "supported", "exact short claim"
+        return "unsupported", "insufficient textual support for short claim"
 
     overlap = sum(1 for t in c_toks if t in s_toks) / len(c_toks)
 
@@ -151,7 +153,7 @@ def evaluate_claim(claim_item, spans_by_id, model="sonnet"):
     return evaluate_entailment_rule(claim_item["claim"], span_texts)
 
 
-def check_brief(store, brief_path, strict=False, spot_check=None, model="sonnet", drop_unsupported=True):
+def check_brief(store, brief_path, strict=False, spot_check=None, model="sonnet", drop_unsupported=True, seed=None):
     """Run fact-checker on brief_path."""
     spans_by_id, _ = sv.load_spans(store)
     with open(brief_path, encoding="utf-8") as f:
@@ -163,7 +165,7 @@ def check_brief(store, brief_path, strict=False, spot_check=None, model="sonnet"
 
     if total_claims == 0:
         report = {
-            "unit": unit_id, "mode": "strict" if strict else "spot-check",
+            "unit": unit_id, "mode": "strict" if strict else "spot-check", "status": "rejected",
             "total_claims": 0, "checked_claims": 0, "supported": 0, "partial": 0,
             "unsupported": 0, "escalated": False, "dropped": [], "results": []
         }
@@ -182,8 +184,7 @@ def check_brief(store, brief_path, strict=False, spot_check=None, model="sonnet"
             k = min(total_claims, int(spot_check))
         else:
             k = min(total_claims, max(2, int(math.ceil(total_claims * 0.2))))
-        # Deterministic seed for reproducible tests if needed
-        rng = random.Random(42)
+        rng = random.Random(seed) if seed is not None else random.SystemRandom()
         to_check = sorted(rng.sample(range(total_claims), k))
         escalated = False
 
@@ -219,15 +220,49 @@ def check_brief(store, brief_path, strict=False, spot_check=None, model="sonnet"
             unsupported_lines.add(c["line"])
             dropped_claims.append(c["raw"])
 
-    # Drop unsupported claims if configured
+    status = "verified" if len(unsupported_lines) == 0 else "partial"
+    # Check if required sections have surviving claims
+    surviving_core = sum(1 for c in claims if c["line"] not in unsupported_lines and c["section"] == "Core claims")
+    surviving_quiz = sum(1 for c in claims if c["line"] not in unsupported_lines and c["section"] == "Quiz seeds")
+    if surviving_core == 0 or surviving_quiz == 0:
+        status = "rejected"
+
+    # Drop unsupported claims if configured and not rejected
     if drop_unsupported and unsupported_lines:
-        lines = brief_text.split("\n")
-        new_lines = [ln for i, ln in enumerate(lines, 1) if i not in unsupported_lines]
-        st.atomic_write(brief_path, "\n".join(new_lines) + "\n")
+        if status != "rejected":
+            lines = brief_text.split("\n")
+            new_lines = [ln for i, ln in enumerate(lines, 1) if i not in unsupported_lines]
+            st.atomic_write(brief_path, "\n".join(new_lines) + "\n")
+            # Synchronize sidecars
+            bdir = os.path.dirname(brief_path)
+            jpath = os.path.join(bdir, f"{unit_id}.json")
+            vpath = os.path.join(bdir, f"{unit_id}.verify.json")
+            surviving_cites = len(CITE.findall("\n".join(new_lines)))
+            if os.path.exists(jpath):
+                try:
+                    jdata = json.load(open(jpath, encoding="utf-8"))
+                    jdata["status"] = status
+                    jdata["cites"] = surviving_cites
+                    jdata["ok"] = min(jdata.get("ok", surviving_cites), surviving_cites)
+                    jdata["dropped"] = list(dict.fromkeys(jdata.get("dropped", []) + dropped_claims))
+                    st.write_json(jpath, jdata)
+                except Exception:
+                    pass
+            if os.path.exists(vpath):
+                try:
+                    vdata = json.load(open(vpath, encoding="utf-8"))
+                    vdata["status"] = status
+                    vdata["cites"] = surviving_cites
+                    vdata["ok"] = min(vdata.get("ok", surviving_cites), surviving_cites)
+                    vdata["dropped"] = list(dict.fromkeys(vdata.get("dropped", []) + dropped_claims))
+                    st.write_json(vpath, vdata)
+                except Exception:
+                    pass
 
     report = {
         "unit": unit_id,
         "mode": "strict" if strict else "spot-check",
+        "status": status,
         "total_claims": total_claims,
         "checked_claims": len(results),
         "supported": sum(1 for r in results.values() if r["verdict"] == "supported"),

@@ -73,37 +73,65 @@ def render_page(pdf_path, page, out_png, max_mp, timeout=TIMEOUT):
     """Render a 1-based PDF page to out_png, downscaling if > max_mp."""
     max_pixels = int(max_mp * 1_000_000)
     stem = out_png[:-4] if out_png.endswith(".png") else out_png
-    # 1. First attempt at 150 dpi
-    cmd = ["pdftoppm", "-r", "150", "-png", "-f", str(page), "-l", str(page), "-singlefile", pdf_path, stem]
-    try:
-        r = subprocess.run(cmd, capture_output=True, timeout=timeout)
-    except (subprocess.TimeoutExpired, OSError):
-        return False, None, None
     actual_png = stem + ".png"
-    if r.returncode != 0 or not os.path.exists(actual_png):
-        return False, None, None
-
-    wh = png_wh(actual_png)
-    if not wh:
-        return False, None, None
-
-    w, h = wh
-    if w * h > max_pixels:
-        # Downscale to fit within max_mp
-        scale = (max_pixels / (w * h)) ** 0.5
-        new_dpi = max(10, int(150 * scale))
-        cmd = ["pdftoppm", "-r", str(new_dpi), "-png", "-f", str(page), "-l", str(page), "-singlefile", pdf_path, stem]
+    try:
+        # 1. First attempt at 150 dpi
+        cmd = ["pdftoppm", "-r", "150", "-png", "-f", str(page), "-l", str(page), "-singlefile", pdf_path, stem]
         try:
             r = subprocess.run(cmd, capture_output=True, timeout=timeout)
         except (subprocess.TimeoutExpired, OSError):
+            if os.path.exists(actual_png):
+                try: os.unlink(actual_png)
+                except OSError: pass
             return False, None, None
+
         if r.returncode != 0 or not os.path.exists(actual_png):
+            if os.path.exists(actual_png):
+                try: os.unlink(actual_png)
+                except OSError: pass
             return False, None, None
+
         wh = png_wh(actual_png)
-        if wh:
+        if not wh:
+            if os.path.exists(actual_png):
+                try: os.unlink(actual_png)
+                except OSError: pass
+            return False, None, None
+
+        w, h = wh
+        if w * h > max_pixels:
+            # Downscale to fit within max_mp
+            scale = (max_pixels / (w * h)) ** 0.5
+            new_dpi = max(1, int(150 * scale))
+            cmd = ["pdftoppm", "-r", str(new_dpi), "-png", "-f", str(page), "-l", str(page), "-singlefile", pdf_path, stem]
+            try:
+                r = subprocess.run(cmd, capture_output=True, timeout=timeout)
+            except (subprocess.TimeoutExpired, OSError):
+                if os.path.exists(actual_png):
+                    try: os.unlink(actual_png)
+                    except OSError: pass
+                return False, None, None
+
+            if r.returncode != 0 or not os.path.exists(actual_png):
+                if os.path.exists(actual_png):
+                    try: os.unlink(actual_png)
+                    except OSError: pass
+                return False, None, None
+
+            wh = png_wh(actual_png)
+            if not wh or wh[0] * wh[1] > int(max_pixels * 1.05):
+                if os.path.exists(actual_png):
+                    try: os.unlink(actual_png)
+                    except OSError: pass
+                return False, None, None
             w, h = wh
 
-    return True, w, h
+        return True, w, h
+    except Exception:
+        if os.path.exists(actual_png):
+            try: os.unlink(actual_png)
+            except OSError: pass
+        return False, None, None
 
 
 def render_unit_vision(store, unit, max_mp=None, timeout=None):
@@ -122,7 +150,8 @@ def render_unit_vision(store, unit, max_mp=None, timeout=None):
         else:
             unit = {"id": unit}
 
-    uid = unit["id"]
+    raw_uid = str(unit.get("id", ""))
+    uid = st.check_slug(os.path.basename(raw_uid.rstrip("/")))
     unit_segs, unit_spans = get_unit_segments_and_spans(store, unit)
 
     # 1. Identify items needing vision
@@ -175,26 +204,28 @@ def render_unit_vision(store, unit, max_mp=None, timeout=None):
         except (OSError, ValueError):
             pass
 
-    vdir = os.path.join(store, "vision", uid)
-    adir = os.path.join(store, "assets")
+    store_real = os.path.realpath(store)
+    vdir = os.path.join(store_real, "vision", uid)
+    adir = os.path.join(store_real, "assets")
     os.makedirs(vdir, exist_ok=True)
     os.makedirs(adir, exist_ok=True)
 
     summary_items = []
     for item in v_items:
-        iid = item["id"]
+        iid = st.check_slug(os.path.basename(str(item["id"]).rstrip("/")))
         pg = item.get("pdf_index")
         if item["kind"] == "asset":
-            target_path = os.path.join(adir, item.get("file", f"{iid}.png"))
+            fname = os.path.basename(str(item.get("file", f"{iid}.png")).rstrip("/"))
+            target_path = st.inside(store_real, os.path.join(adir, fname))
         else:
-            target_path = os.path.join(vdir, f"{iid}.png")
+            target_path = st.inside(store_real, os.path.join(vdir, f"{iid}.png"))
 
         # If already exists and valid
         wh = png_wh(target_path)
         if wh and wh[0] * wh[1] <= int(max_mp * 1_000_000 * 1.05):
             summary_items.append({
                 "id": iid, "kind": item["kind"], "pdf_index": pg,
-                "file": os.path.relpath(target_path, store),
+                "file": os.path.relpath(target_path, store_real),
                 "width": wh[0], "height": wh[1],
                 "mp": round(wh[0] * wh[1] / 1e6, 3), "status": "cached"
             })
@@ -203,7 +234,7 @@ def render_unit_vision(store, unit, max_mp=None, timeout=None):
         if not source_origin or not os.path.isfile(source_origin) or pg is None:
             summary_items.append({
                 "id": iid, "kind": item["kind"], "pdf_index": pg,
-                "file": os.path.relpath(target_path, store),
+                "file": os.path.relpath(target_path, store_real),
                 "status": "skipped_no_source"
             })
             continue
@@ -212,14 +243,14 @@ def render_unit_vision(store, unit, max_mp=None, timeout=None):
         if ok and w and h:
             summary_items.append({
                 "id": iid, "kind": item["kind"], "pdf_index": pg,
-                "file": os.path.relpath(target_path, store),
+                "file": os.path.relpath(target_path, store_real),
                 "width": w, "height": h,
                 "mp": round(w * h / 1e6, 3), "status": "rendered"
             })
         else:
             summary_items.append({
                 "id": iid, "kind": item["kind"], "pdf_index": pg,
-                "file": os.path.relpath(target_path, store),
+                "file": os.path.relpath(target_path, store_real),
                 "status": "failed"
             })
 
@@ -229,7 +260,7 @@ def render_unit_vision(store, unit, max_mp=None, timeout=None):
         "max_render_mp": max_mp,
         "items": summary_items
     }
-    st.write_json(os.path.join(store, "vision", f"{uid}.json"), report)
+    st.write_json(os.path.join(store_real, "vision", f"{uid}.json"), report)
     return summary_items
 
 

@@ -156,7 +156,7 @@ def check(d, ids, where, text):
     return sv.verify(d, None, [ids], where=where, text=text)
 
 
-def make_brief(d, u, model):
+def make_brief(d, u, model, force=False):
     bdir = os.path.join(d, "briefs")
     os.makedirs(bdir, exist_ok=True)
     lock_path = os.path.join(bdir, f"{u['id']}.lock")
@@ -165,8 +165,16 @@ def make_brief(d, u, model):
         fcntl.flock(fd, fcntl.LOCK_EX)
         bpath = os.path.join(bdir, f"{u['id']}.md")
         jpath = os.path.join(bdir, f"{u['id']}.json")
-        if os.path.exists(bpath) and os.path.getsize(bpath) > 0 and os.path.exists(jpath):
+        vpath = os.path.join(bdir, f"{u['id']}.verify.json")
+        if not force and os.path.exists(bpath) and os.path.getsize(bpath) > 0 and os.path.exists(jpath):
             return load(d, os.path.join("briefs", f"{u['id']}.json")).get("status", "verified")
+        if force:
+            for p in (bpath, jpath, vpath):
+                if os.path.exists(p):
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
 
         # Lazy vision rendering before calling librarian (Decision 32)
         try:
@@ -237,21 +245,33 @@ def cmd_brief(slug, uid, model, factcheck_mode=None):
     jpath = os.path.join(bdir, f"{uid}.json")
     vpath = os.path.join(bdir, f"{uid}.verify.json")
 
-    # If cached brief exists: verify it still passes against spans.jsonl
-    if os.path.exists(bpath):
-        if os.path.getsize(bpath) == 0 or not os.path.exists(jpath):
-            make_brief(d, u, model)
-        else:
+    corrupt = False
+    if not os.path.exists(bpath) or os.path.getsize(bpath) == 0 or not os.path.exists(jpath):
+        corrupt = True
+    else:
+        try:
             path, where = unit_file(d, u)
             ids = path + ".ids"
             rep = check(d, ids, where, open(bpath, encoding="utf-8").read())
-            if not os.path.exists(vpath):
+            structural_errors = [f for f in rep["failures"] if "missing section" in f.get("reason", "")
+                                 or "text before" in f.get("reason", "")
+                                 or "heading not in schema" in f.get("reason", "")
+                                 or "heading out of order" in f.get("reason", "")
+                                 or "brief has no cites" in f.get("reason", "")]
+            if structural_errors or rep["ok"] == 0:
+                corrupt = True
+            elif not os.path.exists(vpath):
                 vrep = dict(rep)
                 vrep["status"] = load(d, os.path.join("briefs", f"{uid}.json")).get("status", "verified")
                 vrep["dropped"] = load(d, os.path.join("briefs", f"{uid}.json")).get("dropped", [])
                 st.write_json(vpath, vrep)
-    else:
-        make_brief(d, u, model)
+        except Exception:
+            corrupt = True
+
+    if corrupt:
+        if os.path.exists(bpath):
+            print(f"warning: cached brief {uid} is corrupted or invalid; regenerating", file=sys.stderr)
+        make_brief(d, u, model, force=True)
 
     if factcheck_mode:
         import factcheck
