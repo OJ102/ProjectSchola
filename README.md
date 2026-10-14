@@ -29,12 +29,12 @@ Most learning tools fail because they teach to an imaginary "average" developer:
 
 ```mermaid
 flowchart TD
-    A["🎯 1. ADAPTIVE PROBE<br/>Binary-searches your knowledge frontier"] --> B["🗺️ 2. VISUAL BLUEPRINT<br/>Proposes concept DAG & learning contract"]
-    B --> C["💡 3. MOTIVATED DISCOVERY<br/>Builds from unconditional truths (3B1B style)"]
-    C --> D{"🧩 4. MASTERY CHECK<br/>Native AskUserQuestion quiz"}
-    D -- Missed / Misconception --> E["🔄 Targeted Scaffolding<br/>Isolates & dislodges mental trap"]
+    A["🎯 1. ADAPTIVE PROBE<br/>Binary-searches your<br/>knowledge frontier"] --> B["🗺️ 2. VISUAL BLUEPRINT<br/>Proposes concept DAG<br/>& learning contract"]
+    B --> C["💡 3. MOTIVATED DISCOVERY<br/>First-principles intuition<br/>(3Blue1Brown style)"]
+    C --> D{"🧩 4. MASTERY CHECK<br/>AskUserQuestion quiz"}
+    D -- Missed / Misconception --> E["🔄 Targeted Scaffolding<br/>Isolates & dislodges<br/>mental trap"]
     E --> C
-    D -- Mastered --> F["📓 5. OBSIDIAN VAULT COMPILATION<br/>Live notes, LaTeX proofs, verified diagrams"]
+    D -- Mastered --> F["📓 5. OBSIDIAN VAULT<br/>Live notes, LaTeX proofs,<br/>& verified diagrams"]
     F --> G["🚀 Next Concept Node"]
     G --> C
 ```
@@ -105,45 +105,43 @@ Schola is engineered with production-grade rigor: **745+ automated regression te
 ```mermaid
 flowchart LR
     subgraph CLI ["Claude Code Terminal"]
-        User["Developer"]
-        CC["Claude Code Engine"]
-        Ask["AskUserQuestion (Quiz Dialog)"]
+        User["Developer"] -->|Prompt / /voice| CC["Claude Code Engine"]
     end
 
     subgraph Skills ["Schola Skills & Pedagogy"]
-        Teach["/teach (Core Socratic Engine)"]
-        Ingest["/ingest (PDF / Book Ingestion)"]
-        VoiceOn["/speak-on / /speak-off"]
-        Viz["/visualize"]
+        Teach["/teach<br/>(Socratic Engine)"]
+        Ingest["/ingest<br/>(Book Ingestion)"]
+        VoiceOn["/speak-on / /speak-off<br/>(Voice Mode)"]
+        Viz["/visualize<br/>(Visualizer)"]
     end
 
     subgraph Agents ["Autonomous Subagents"]
+        Ask["AskUserQuestion<br/>(Quiz Dialog)"]
         Librarian["Source Librarian"]
+        Researcher["Fact-Check Researcher"]
         MM["mermaid-maker"]
         SVG["svg-maker"]
-        Researcher["Fact-Check Researcher"]
     end
 
-    subgraph Engine ["Hooks & Runtime Engine"]
-        Audio["Audio Engine (macOS say + cleaner)"]
-        VaultSync["md-log Hook (Transcript Parser)"]
-        SourceStore["Normalized Source Store"]
+    subgraph Engine ["Runtime Hooks & Audio"]
+        Audio["Audio Engine<br/>(macOS say + cleaner)"]
+        VaultSync["md-log Hook<br/>(Transcript Parser)"]
+        SourceStore["Normalized Store<br/>(Apple Vision OCR)"]
     end
 
-    subgraph SecondBrain ["Local Storage"]
-        Obsidian["Obsidian Vault (Notes & Viz)"]
-        Sources["~/.local/share/schola/sources"]
+    subgraph Storage ["Persistent Second Brain"]
+        Obsidian[("Obsidian Vault<br/>sessions/ & viz/")]
+        Sources[("Local Source Store<br/>~/.local/share/schola/")]
     end
 
-    User <-->|Terminal / /voice| CC
-    CC --> Teach & Ingest & VoiceOn & Viz
+    CC --> Skills
+    CC --> Audio
+    CC --> VaultSync
     Teach --> Ask
     Teach --> Librarian & Researcher
     Viz --> MM & SVG
     Ingest --> SourceStore
     SourceStore --> Sources
-    CC --> Audio
-    CC --> VaultSync
     VaultSync --> Obsidian
     MM & SVG --> Obsidian
 ```
