@@ -88,7 +88,22 @@ const AskUserQuestionParams = Type.Object({
 			description: "Set to true to allow multiple answers to be selected for a question.",
 		}),
 	),
+	shuffle: Type.Optional(
+		Type.Boolean({
+			description:
+				"Set to true to randomly shuffle options before displaying them (e.g. so the first option is not always the correct answer).",
+		}),
+	),
 });
+
+function shuffleOptions<T>(array: T[]): T[] {
+	const out = [...array];
+	for (let i = out.length - 1; i > 0; i--) {
+		const j = Math.floor(Math.random() * (i + 1));
+		[out[i], out[j]] = [out[j], out[i]];
+	}
+	return out;
+}
 
 function normalizeOptions(options: Array<{ label: string; value?: string; description?: string }> | undefined): AskOption[] {
 	return (options || [])
@@ -581,11 +596,15 @@ export default function askUserQuestion(pi: ExtensionAPI) {
 			'If you recommend a specific option, make it the first option in the list and add "(Recommended)" at the end of the label.',
 			"Prefer this tool over guessing when requirements, preferences, or implementation choices are unclear.",
 			"Use this tool when multiple valid implementation paths exist and the preferred path depends on user choice.",
+			"Set shuffle: true when options should be randomly reordered (e.g. for quiz or probe questions where position shouldn't give away an answer).",
 		],
 		parameters: AskUserQuestionParams,
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const options = normalizeOptions(params.options);
+			let options = normalizeOptions(params.options);
+			if (params.shuffle) {
+				options = shuffleOptions(options);
+			}
 			const context = params.details?.trim() || undefined;
 			const mode: AskUserQuestionMode = options.length === 0 ? "text" : params.multiSelect ? "multi-select" : "single-select";
 

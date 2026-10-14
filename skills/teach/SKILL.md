@@ -79,14 +79,15 @@ The tool already tells you to keep options even. That rule isn't enough on its o
 2. **Write the correct claim first, then mutate it into each distractor.** Take one specific misconception or easily-confused neighbour and state what someone holding it would claim — in the *same* skeleton, grain size, and register as the correct claim. Now every option is "the claim under some belief," and the correct one is just the claim under the *correct* belief. Parallelism falls out by construction instead of being policed.
 3. Each distractor must still be a real error he might actually make (so which one he picks is diagnostic), yet unambiguously wrong on the intended reading — tempting, not tricky.
 4. **No asymmetric bolding.** Don't bold the key concept in one option and not the others — highlighting the term you're testing only in the correct answer flags it instantly. Either bold nothing, or bold the parallel term in every option.
+5. **Always shuffle options before presenting.** Because step 2 drafts the correct claim first, it will inevitably end up as the first option if passed directly. **Shuffle the option order every time.** The correct answer must never predictably sit in position 1; vary its position randomly across questions (slot 1, 2, 3, etc.). If you include an opt-out choice like "I haven't encountered this yet", keep that at the very end, but always shuffle all the substantive options among themselves.
 
-If, reading the finished set cold, you can still tell which is right without knowing the material, you skipped step 1 or 2 — regenerate, don't patch.
+If, reading the finished set cold, you can still tell which is right without knowing the material (or because it is always the first option), you skipped step 1, 2, or 5 — regenerate and shuffle.
 
 ### Phase 1 — Probe (never skip this)
 
 You can't teach into his zone of proximal development without knowing where its edges are, and you can't aim the teaching without knowing what he's actually reaching for. Two separate unknowns, two separate tools — keep the boundary clean:
 
-**1a. His current level — use `AskUserQuestion` with multiple-choice options. This is a mapping job, not a spot-check.** Your goal is to locate the *edge* of his understanding — the frontier where what he reliably knows turns into what he doesn't — along every strand the planned lesson will depend on. Until you've actually found that edge, you cannot teach into it, so this phase gets as long and detailed as it needs to be. There is no rush.
+**1a. His current level — use `AskUserQuestion` with multiple-choice options. This is a mapping job, not a spot-check.** Your goal is to locate the *edge* of his understanding — the frontier where what he reliably knows turns into what he doesn't — along every strand the planned lesson will depend on. Until you've actually found that edge, you cannot teach into it, so this phase gets as long and detailed as it needs to be. There is no rush. (Always shuffle the options so the correct answer is not predictably the first choice.)
 
 **The edge is only located when it's bracketed.** For each relevant strand you need *both*: something at that level he gets **right** (a floor — proof he knows at least this much) and something he gets **wrong** or genuinely doesn't know (a ceiling — where it runs out). The edge sits between them. One side alone tells you almost nothing.
 
@@ -131,7 +132,7 @@ For **every node** (each unconditional truth *and* each non-trivial reasoning st
    - If it's a foundational unconditional truth: state it plainly, at face value, no caveats. Surface an atomic unit if one fits.
    - If it's a derived step: build it up from what's already established via a motivated move (Socratic or expository), answering "how could I have discovered this?" When a Socratic step has a gradable right/wrong answer, pose it with `AskUserQuestion` multiple-choice even though he's "attempting the discovery" — gradable-and-Socratic is normal, not a contradiction; only fall back to free-text questions if there's genuinely no right answer.
 3. **Connect.** Make the dependency edge explicit — show exactly how this new node hangs off the ones already in place, so it's understood, not memorized.
-4. **Quiz-check.** Confirm the node actually landed with a quick `AskUserQuestion` multiple-choice — this applies to foundations just as much as derived steps. An unconfirmed unconditional truth is exactly as dangerous as an unconfirmed derived fact: if he misses it, that node isn't solid, so stop and fix it before building anything on top of it.
+4. **Quiz-check.** Confirm the node actually landed with a quick `AskUserQuestion` multiple-choice (always shuffle the options) — this applies to foundations just as much as derived steps. An unconfirmed unconditional truth is exactly as dangerous as an unconfirmed derived fact: if he misses it, that node isn't solid, so stop and fix it before building anything on top of it.
 
 Repeat this full loop per node — don't front-load all the foundations once at the start and then stop checking. Any time a new unconditional truth is needed mid-session, it goes through motivate → establish → connect → quiz-check just like a derived step would.
 
@@ -170,7 +171,8 @@ If the user gives a title instead of a slug, run `list` and pick the match. If n
 
 - **Option descriptions leak answers.** AskUserQuestion options have descriptions. Never use descriptions that signal correctness ("This is right") or incorrectness ("A misconception"). Only the option label should be visible; descriptions should be empty or neutral if needed at all.
 - **Model-side grading (simplified).** You grade answers directly from your knowledge. The model knows the answer when asking (teacher always does). Binary-search the edge carefully: escalate on all-correct, narrow on a miss. Grade each answer explicitly and show the explanation before the next question.
-- **No "I don't know" slot.** AskUserQuestion has "Other" always available. Reserve one of the 2-4 option slots for "I haven't encountered this yet" or similar.
+- **Shuffle options in every question.** Because you draft the correct answer first, explicitly shuffle the options before calling AskUserQuestion so the correct answer does not always appear in the first position. Distribute the correct answer across different slots (first, middle, last).
+- **No "I don't know" slot.** AskUserQuestion has "Other" always available. Reserve one of the 2-4 option slots for "I haven't encountered this yet" or similar (keep this at the end, while shuffling substantive options).
 - **Free-text questions.** AskUserQuestion has no pure free-text mode. For goal questions (1b) or open-ended responses, ask in plain chat or use AskUserQuestion with an "Other" option that captures the text.
 - **Answers logged cleanly.** The md-log hooks capture questions before answers. No correct answer is leaked into the transcript prematurely — the question appears, user answers, then you grade. Session is mirrored live to Obsidian vault.
 

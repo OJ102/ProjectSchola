@@ -67,6 +67,7 @@ Schola doesn't guess what you know. When you run `/teach <topic>`, it initiates 
 ### 🧩 2. Formative Multi-Choice Mastery Checks
 No hand-waving, rhetorical questions, or trivia traps. Every micro-concept ends with a structured question via Claude Code's native `AskUserQuestion` interactive interface.
 - Answer choices are engineered to eliminate superficial giveaway wording.
+- Options are shuffled so the correct answer never predictably sits in the first slot.
 - A dedicated *"I haven't encountered this yet"* option guarantees genuine calibration without guessing.
 - If you miss a question, Schola pivots, addresses the misconception with an alternative mental model, and re-evaluates before building higher-level abstractions on shaky ground.
 
