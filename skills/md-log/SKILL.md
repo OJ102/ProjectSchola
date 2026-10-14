@@ -1,15 +1,15 @@
 ---
 name: md-log
-description: Manage the live markdown log of the teaching session. Use /md-log to start logging, /md-unlog to stop.
+description: Live Obsidian knowledge base sync. Automatically mirrors session transcripts to structured markdown notes in real time.
 ---
 
 # md-log
 
-Live mirror of the teaching session to a markdown file. Questions appear before answers. No correct answer is ever leaked into the log.
+Live mirror of the teaching session to Obsidian markdown notes (`$OBSIDIAN_VAULT_PATH/sessions/<date> <topic>.md`). Questions appear before answers, and no correct answer is ever leaked into the log.
 
 ## Setup
 
-Before using `/md-log`, set your Obsidian vault path:
+Set your Obsidian vault path in your shell profile (`~/.zshrc` or `~/.bashrc`):
 
 ```bash
 export OBSIDIAN_VAULT_PATH=~/Obsidian/learn
@@ -17,47 +17,25 @@ export OBSIDIAN_VAULT_PATH=~/Obsidian/learn
 
 (Default: `~/Obsidian/learn` if not set.)
 
-## Commands
+## Live Watch Architecture
 
-### /md-log [filename]
+Live synchronization is powered by a daemonized watcher ([`hooks/md-log-watch.py`](file:///Users/omjadhav/Projects/learn/hooks/md-log-watch.py)) inspired by the file-watching architecture in `gapmiss/claude-sessions`:
 
-Start (or restart) the markdown log file. Writes to `session.md` in your Obsidian vault.
+- **Event Detection**: Uses macOS native `kqueue` vnode filters (`NOTE_WRITE`, `NOTE_EXTEND`, `NOTE_DELETE`, `NOTE_RENAME`) with a stat-polling fallback.
+- **Debounced Compilation**: Changes trigger a trailing debounce window (`MD_LOG_DEBOUNCE_MS`, default 500ms) with a maximum delay cap (`MD_LOG_MAXWAIT_MS`, default 2000ms) to consolidate high-frequency writes during streaming turns.
+- **Session Lifecycle**:
+  - `SessionStart`: Spawns the background watcher daemon (`hooks/md-log-watch.sh start`).
+  - `SessionEnd`: Signals the watcher to stop (`hooks/md-log-watch.sh stop`) and performs a final sync.
+  - Self-Reaping: The daemon verifies the parent process ID and automatically terminates if Claude Code exits abruptly.
+- **Concurrency & Idempotency**: Atomic writes and symlink locks (`$MD_LOG_STATE_DIR/<session>.lock`) ensure no race conditions between live compilation and end-of-turn hooks.
 
-The log file is created in Obsidian vault format. It captures:
-- User prompts (as blockquotes)
-- Teacher replies (as prose)
-- Questions and answers (Q before A, no grading revealed)
-- Diagrams (as wikilink embeds)
+## Environment Variables
 
-If the file already exists, appends to it.
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `OBSIDIAN_VAULT_PATH` | `~/Obsidian/learn` | Target vault directory |
+| `MD_LOG_LIVE` | `1` | Set to `0` to disable background watcher and compile only at turn end |
+| `MD_LOG_DEBOUNCE_MS` | `500` | Quiescence window before compiling changes (milliseconds) |
+| `MD_LOG_MAXWAIT_MS` | `2000` | Max delay before compiling active transcript streams (milliseconds) |
+| `MD_LOG_STATE_DIR` | `~/.claude/learn-md-log` | Directory holding watcher PID and lock files |
 
-### /md-unlog
-
-Stop logging. The file remains and is not deleted.
-
-## Behavior
-
-- **Question before answer:** the hook logs the question on `PreToolUse`, then the user's answer on `PostToolUse`. This ordering is preserved in the markdown.
-- **No answer leak:** the correct answer is NEVER written to the log. Only the question and the user's selected answer appear.
-- **Live append-only:** each turn is appended as it happens. No re-rendering or back-fill.
-- **Restore after restart:** if Claude Code session restarts, the log file persists and new appends continue from where it left off.
-
-## Format
-
-Log uses Obsidian markdown:
-- User prompt: `> **User:** question text`
-- Teacher reply: plain prose
-- Question: `> **Q:** question text`
-- Answer: `**A:** user's choice`
-- Diagram embed: `![[viz-name.png|500]]` (diagrams saved to `viz/` folder in vault)
-- LaTeX: inline `$x^2$` and display `$$x^2$$`
-
-## Obsidian vault location
-
-The log is written to `${OBSIDIAN_VAULT_PATH}/session.md`. Diagrams are saved to `${OBSIDIAN_VAULT_PATH}/viz/` automatically.
-
-To open the vault in Obsidian, point it to `~/Obsidian/learn` (or your configured path).
-
-## Implementation note
-
-The hooks (`PreToolUse`, `PostToolUse` on `AskUserQuestion`) pipe to `md-log-hook.sh`, which reads the hook input JSON and appends the question/answer to the log file. A state file tracks pending questions by tool_use_id to ensure question-before-answer ordering.

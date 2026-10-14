@@ -103,7 +103,56 @@ J
   echo "{\"session_id\":\"abcdef1234\",\"transcript_path\":\"$TR\"}" | bash "$HOOKS/md-log-stop-hook.sh"
   n=$(ls "$OBSIDIAN_VAULT_PATH/sessions" | wc -l | tr -d ' ')
   [ "$n" = 1 ] && ok "md-log idempotent (1 file after 2 runs)" || bad "md-log idempotent (1 file after 2 runs)" "files=$n"
-  unset OBSIDIAN_VAULT_PATH
+
+  # Live watch test (patterned after gapmiss/claude-sessions)
+  export MD_LOG_STATE_DIR="$T/md_state"
+  export MD_LOG_DEBOUNCE_MS=100
+  export MD_LOG_POLL_MS=100
+  LIVE_SESS="live_sess_test_123"
+  LIVE_TR="$T/live_tr.jsonl"
+  : > "$LIVE_TR"
+  # Start watcher via SessionStart hook
+  jq -nc --arg tr "$LIVE_TR" --arg sid "$LIVE_SESS" '{transcript_path:$tr, session_id:$sid}' \
+    | bash "$HOOKS/md-log-watch.sh" start
+  rc=$?
+  [ $rc = 0 ] && ok "md-log-watch start exits 0" || bad "md-log-watch start exits 0" "rc=$rc"
+
+  # Check that pid file was created and watcher process is active
+  PID_FILE="$MD_LOG_STATE_DIR/${LIVE_SESS}.pid"
+  for _ in $(seq 1 20); do [ -s "$PID_FILE" ] && break; sleep 0.05; done
+  WATCH_PID=$(awk '{print $1}' "$PID_FILE" 2>/dev/null)
+  if [ -n "$WATCH_PID" ] && kill -0 "$WATCH_PID" 2>/dev/null; then
+    ok "md-log watcher daemon started"
+  else
+    bad "md-log watcher daemon started" "pid=$WATCH_PID state=$(ls -la "$MD_LOG_STATE_DIR" 2>&1)"
+  fi
+
+  # Append turn to transcript
+  echo '{"type":"user","timestamp":"2026-10-13T12:00:00Z","message":{"role":"user","content":"<command-name>/teach</command-name><command-args>Live Sockets</command-args>"}}' >> "$LIVE_TR"
+  echo '{"type":"assistant","timestamp":"2026-10-13T12:00:05Z","message":{"role":"assistant","content":[{"type":"text","text":"Sockets allow two-way communication."}]}}' >> "$LIVE_TR"
+
+  LIVE_LOG="$OBSIDIAN_VAULT_PATH/sessions/2026-10-13 Live Sockets.md"
+  # Wait for debounced live watcher to compile the note
+  found=0
+  for _ in $(seq 1 40); do
+    if [ -f "$LIVE_LOG" ] && grep -q "Sockets allow two-way" "$LIVE_LOG" 2>/dev/null; then
+      found=1; break
+    fi
+    sleep 0.1
+  done
+  [ $found = 1 ] && ok "md-log live watch updates note dynamically" || bad "md-log live watch updates note dynamically" "$(cat "$LIVE_LOG" 2>&1)"
+
+  # Stop watcher via SessionEnd hook
+  jq -nc --arg sid "$LIVE_SESS" '{session_id:$sid}' | bash "$HOOKS/md-log-watch.sh" stop
+  sleep 0.2
+  if kill -0 "$WATCH_PID" 2>/dev/null; then
+    bad "md-log watcher terminates cleanly on stop" "pid $WATCH_PID still alive"
+  else
+    ok "md-log watcher terminates cleanly on stop"
+  fi
+  [ ! -f "$PID_FILE" ] && ok "md-log pid file cleaned up" || bad "md-log pid file cleaned up" "found $PID_FILE"
+
+  unset OBSIDIAN_VAULT_PATH MD_LOG_STATE_DIR MD_LOG_DEBOUNCE_MS MD_LOG_POLL_MS
 fi
 
 # ============================================================================

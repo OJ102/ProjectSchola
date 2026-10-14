@@ -43,9 +43,31 @@
         ]
       }
     ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/md-log-watch.sh",
+              "start"
+            ]
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "bash",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/md-log-watch.sh",
+              "stop"
+            ]
+          },
           {
             "type": "command",
             "command": "bash",

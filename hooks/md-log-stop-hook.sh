@@ -14,6 +14,36 @@ SESSION_ID=$(jq -r '.session_id // empty' <<<"$INPUT")
 SID="${SESSION_ID:0:8}"
 mkdir -p "$SESSIONS_DIR"
 
+# One render at a time per session: the live watcher (md-log-watch.py) and the Stop/answer hooks
+# all call this script. The transcript is read inside the lock, so the last writer always has the
+# newest content. Same lock as speak_lock: a symlink naming "pid lstart", broken at once if its owner is gone.
+STATE_DIR="${MD_LOG_STATE_DIR:-$HOME/.claude/learn-md-log}"
+case "$STATE_DIR" in -*) STATE_DIR="./$STATE_DIR" ;; esac
+LOCK="$STATE_DIR/$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9_-' '_' | cut -c1-80).lock"
+pid_start() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//'; }
+md_lock() {
+  mkdir -p -- "$STATE_DIR" 2>/dev/null || return 1
+  local i=0 owner pid start
+  LOCK_ME="$$ $(pid_start $$)"
+  while ! ln -s "$LOCK_ME" "$LOCK" 2>/dev/null; do
+    if [ -L "$LOCK" ]; then
+      owner=$(readlink "$LOCK" 2>/dev/null)
+      read -r pid start <<<"$owner"
+      case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
+      if [ "$pid" -le 1 ] || [ -z "$start" ] || [ "$(pid_start "$pid")" != "$start" ]; then
+        [ "$(readlink "$LOCK" 2>/dev/null)" = "$owner" ] && rm -f "$LOCK"
+      fi
+    elif [ -e "$LOCK" ]; then
+      rmdir "$LOCK" 2>/dev/null || mv -f "$LOCK" "$LOCK.stale.$$" 2>/dev/null
+    fi
+    i=$((i + 1)); [ "$i" -ge 400 ] && return 1   # 20s
+    sleep 0.05
+  done
+}
+md_unlock() { [ "$(readlink "$LOCK" 2>/dev/null)" = "$LOCK_ME" ] && rm -f "$LOCK"; return 0; }
+md_lock || exit 0
+trap md_unlock EXIT
+
 TOPIC=$(jq -r '
   select(.type == "user" and (.message.content | type) == "string")
   | .message.content
@@ -63,7 +93,7 @@ select((.isSidechain // false) | not)
 | try (entry | . + "\n") catch empty
 '
 
-TMP="${LOG_FILE}.tmp"
+TMP="${LOG_FILE}.tmp.$$"
 {
   echo "---"
   echo "session: $SESSION_ID"
@@ -74,7 +104,7 @@ TMP="${LOG_FILE}.tmp"
   echo "# ${SAFE_TOPIC:-Teaching session}"
   echo ""
   jq -r "$JQ_PROGRAM" "$TRANSCRIPT_PATH" 2>/dev/null
-} > "$TMP" && mv "$TMP" "$LOG_FILE"
+} > "$TMP" && mv -f "$TMP" "$LOG_FILE"
 
 if [ -n "$EXISTING" ] && [ "$EXISTING" != "$LOG_FILE" ]; then
   rm -f "$EXISTING"
