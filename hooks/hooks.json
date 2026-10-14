@@ -39,6 +39,13 @@
               "${CLAUDE_PLUGIN_ROOT}/hooks/speak.sh"
             ],
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "bash",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/source-cite-check.sh"
+            ]
           }
         ]
       }
@@ -73,6 +80,13 @@
             "command": "bash",
             "args": [
               "${CLAUDE_PLUGIN_ROOT}/hooks/md-log-stop-hook.sh"
+            ]
+          },
+          {
+            "type": "command",
+            "command": "bash",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/source-cite-check.sh"
             ]
           }
         ]

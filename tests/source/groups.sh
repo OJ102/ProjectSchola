@@ -437,6 +437,145 @@ if want source-teach; then
   fi
 fi
 
+echo "== source-cite =="
+if want source-cite; then
+  SV="$ROOT/hooks/source-verify.sh"
+  SC="$ROOT/hooks/source-cite.sh"
+  SCC="$ROOT/hooks/source-cite-check.sh"
+  if [ ! -f "$SV" ] || [ ! -f "$SC" ] || [ ! -f "$SCC" ]; then skip "source-cite" "missing hooks"
+  else
+    D="$WORK/cite"; senv "$D"
+    S="$SCHOLA_SOURCES_DIR/myslug"
+    mkdir -p "$S"
+    python3 -I - "$S" <<'EOF_STORE'
+import json, sys
+sdir = sys.argv[1]
+with open(f"{sdir}/spans.jsonl", "w", encoding="utf-8") as f:
+    f.write(json.dumps({"id": "p0010.1", "segment": "p0010", "locator": "10", "kind": "para", "text": "Tides are driven by the gravitational pull of the moon and the sun.", "norm": "tides are driven by the gravitational pull of the moon and the sun"}) + "\n")
+    f.write(json.dumps({"id": "p0010.2", "segment": "p0010", "locator": "10", "kind": "para", "text": "Spring tides happen when the sun and moon align together in space.", "norm": "spring tides happen when the sun and moon align together in space"}) + "\n")
+with open(f"{sdir}/labels.json", "w", encoding="utf-8") as f:
+    json.dump({"pages": [{"pdf_index": 10, "label": "10"}]}, f)
+with open(f"{sdir}/outline.json", "w", encoding="utf-8") as f:
+    json.dump([{"id": "c1", "title": "Tides", "depth": 1, "pdf_index": 10}], f)
+EOF_STORE
+
+    # --- source-verify.sh tests ---
+    mkdir -p "$D/briefs"
+    cat > "$D/briefs/valid.md" <<'EOF_V'
+## Where
+Chapter 1
+
+## Core claims
+- Moon drives tides [[cite:p0010.1 "driven by the gravitational pull of the moon"]]
+
+## Quiz seeds
+1. What drives tides? [[cite:p0010.1 "driven by the gravitational pull of the moon"]]
+EOF_V
+
+    cat > "$D/briefs/no_quiz.md" <<'EOF_NQ'
+## Where
+Chapter 1
+
+## Core claims
+- Moon drives tides [[cite:p0010.1 "driven by the gravitational pull of the moon"]]
+EOF_NQ
+
+    cat > "$D/briefs/forged_anchor.md" <<'EOF_FA'
+## Where
+Chapter 1
+
+## Core claims
+- Moon drives tides [[cite:p0010.1 "words that the book never says anywhere"]]
+
+## Quiz seeds
+1. What drives tides? [[cite:p0010.1 "words that the book never says anywhere"]]
+EOF_FA
+
+    cat > "$D/briefs/unknown_id.md" <<'EOF_UI'
+## Where
+Chapter 1
+
+## Core claims
+- Moon drives tides [[cite:p9999.1 "driven by the gravitational pull of the moon"]]
+
+## Quiz seeds
+1. What drives tides? [[cite:p0010.1 "driven by the gravitational pull of the moon"]]
+EOF_UI
+
+    cat > "$D/briefs/raw_locator.md" <<'EOF_RL'
+## Where
+Chapter 1
+
+## Core claims
+- Moon drives tides on page 10 [[cite:p0010.1 "driven by the gravitational pull of the moon"]]
+
+## Quiz seeds
+1. What drives tides? [[cite:p0010.1 "driven by the gravitational pull of the moon"]]
+EOF_RL
+
+    bash "$SV" "$S" "$D/briefs/valid.md" >"$D/v_ok.log" 2>&1; rc=$?
+    [ $rc = 0 ] && grep -q '^PASS' "$D/v_ok.log" && ok "verify: valid brief passes (exit 0)" || bad "verify: valid brief passes" "rc=$rc $(cat "$D/v_ok.log")"
+
+    bash "$SV" "$S" "$D/briefs/no_quiz.md" >"$D/v_nq.log" 2>&1; rc=$?
+    [ $rc = 1 ] && grep -q '^FAIL' "$D/v_nq.log" && ok "verify: missing section fails (exit 1)" || bad "verify: missing section fails" "rc=$rc $(cat "$D/v_nq.log")"
+
+    bash "$SV" "$S" "$D/briefs/forged_anchor.md" >"$D/v_fa.log" 2>&1; rc=$?
+    [ $rc = 1 ] && grep -q '^FAIL' "$D/v_fa.log" && ok "verify: forged anchor fails (exit 1)" || bad "verify: forged anchor fails" "rc=$rc $(cat "$D/v_fa.log")"
+
+    bash "$SV" "$S" "$D/briefs/unknown_id.md" >"$D/v_ui.log" 2>&1; rc=$?
+    [ $rc = 1 ] && grep -q '^FAIL' "$D/v_ui.log" && ok "verify: unknown span id fails (exit 1)" || bad "verify: unknown span id fails" "rc=$rc $(cat "$D/v_ui.log")"
+
+    bash "$SV" "$S" "$D/briefs/raw_locator.md" >"$D/v_rl.log" 2>&1; rc=$?
+    [ $rc = 1 ] && grep -q '^FAIL' "$D/v_rl.log" && ok "verify: raw locator outside cite fails (exit 1)" || bad "verify: raw locator outside cite fails" "rc=$rc $(cat "$D/v_rl.log")"
+
+    o=$(bash "$SV" "$S" "$D/briefs/valid.md" --render 2>&1); rc=$?
+    [ $rc = 0 ] && grep -q '(p. 10: “' <<<"$o" && ! grep -q '\[\[cite:' <<<"$o" \
+      && ok "verify: --render renders brief with locators" || bad "verify: --render renders brief with locators" "rc=$rc $o"
+
+    # --- source-cite.sh tests ---
+    o=$(bash "$SC" "$S" "p0010.1" 2>&1); rc=$?
+    [ $rc = 0 ] && [ "$o" = "p. 10" ] && ok "cite: resolution with store dir" || bad "cite: resolution with store dir" "rc=$rc o='$o'"
+
+    o=$(bash "$SC" "myslug" "p0010.1" 2>&1); rc=$?
+    [ $rc = 0 ] && [ "$o" = "p. 10" ] && ok "cite: resolution with slug" || bad "cite: resolution with slug" "rc=$rc o='$o'"
+
+    o=$(bash "$SC" "$S" "p0010.1" --parens 2>&1)
+    [ "$o" = "(p. 10)" ] && ok "cite: --parens formats '(p. 10)'" || bad "cite: --parens formats '(p. 10)'" "$o"
+
+    o=$(bash "$SC" "$S" "p0010.1" -p 2>&1)
+    [ "$o" = "(p. 10)" ] && ok "cite: -p formats '(p. 10)'" || bad "cite: -p formats '(p. 10)'" "$o"
+
+    o=$(bash "$SC" "$S" "p0010.1" --quote 2>&1)
+    [[ "$o" == 'p. 10: “'* ]] && ok "cite: --quote formats 'locator: “text”'" || bad "cite: --quote formats 'locator: “text”'" "$o"
+
+    o=$(bash "$SC" "$S" "p0010.1" --quote --parens 2>&1)
+    [[ "$o" == '(p. 10: “'*')' ]] && ok "cite: --quote --parens formats '(locator: “text”)'" || bad "cite: --quote --parens formats '(locator: “text”)'" "$o"
+
+    o=$(bash "$SC" "$S" "p0010.1" --format json 2>&1); rc=$?
+    [ $rc = 0 ] && python3 -c 'import json,sys;d=json.loads(sys.argv[1]);assert d["id"]=="p0010.1" and d["locator"]=="p. 10" and d["segment"]=="p0010"' "$o" 2>/dev/null \
+      && ok "cite: --format json returns valid JSON" || bad "cite: --format json returns valid JSON" "rc=$rc $o"
+
+    o=$(bash "$SC" "$S" "p0010.1" --format json --quote 2>&1); rc=$?
+    [ $rc = 0 ] && python3 -c 'import json,sys;d=json.loads(sys.argv[1]);assert "text" in d and len(d["text"]) > 10' "$o" 2>/dev/null \
+      && ok "cite: --format json --quote includes span text" || bad "cite: --format json --quote includes span text" "rc=$rc $o"
+
+    o=$(bash "$SC" "$S" "p0010.1" --quote-only 2>&1)
+    [[ "$o" == "Tides are driven by the gravitational pull"* ]] && ok "cite: --quote-only prints plain text" || bad "cite: --quote-only prints plain text" "$o"
+
+    o=$(bash "$SC" "$S" "p9999.1" 2>&1); rc=$?
+    [ $rc = 1 ] && grep -qi "not found" <<<"$o" && ok "cite: unknown span id exits 1" || bad "cite: unknown span id exits 1" "rc=$rc $o"
+
+    o=$(bash "$SC" "$D/no_such_store" "p0010.1" 2>&1); rc=$?
+    [ $rc = 1 ] && grep -qi "not found" <<<"$o" && ok "cite: invalid store exits 1" || bad "cite: invalid store exits 1" "rc=$rc $o"
+
+    o=$(bash "$SC" 2>&1); rc=$?
+    [ $rc = 2 ] && ok "cite: missing args exits 2" || bad "cite: missing args exits 2" "rc=$rc $o"
+
+    # --- source-cite-check.sh tests (via check_tutor.py) ---
+    tally "cite " < <(python3 -I "$TSRC/check_tutor.py" "$HOOKS" "$D/tutor_run" 2>&1)
+  fi
+fi
+
 echo "== source-git =="
 if want source-git; then
   tracked=$(cd "$ROOT" && git ls-files | grep -vE '^(tests/fixtures|spikes/fixtures-src)/' | grep -iE '\.(pdf|epub|jp2|jpe?g|png)$|(^|/)segments/|spans\.jsonl|labels\.json|units\.json|xrefs\.json|/briefs/|AIBooks|Huyen' | grep -vE '^assets/')
