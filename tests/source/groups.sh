@@ -405,6 +405,38 @@ if want source-caps; then
   fi
 fi
 
+echo "== source-teach =="
+if want source-teach; then
+  BR="$ROOT/hooks/source-brief.sh"
+  if [ ! -f "$BR" ]; then skip "source-teach" "no hooks/source-brief.sh"
+  else
+    D="$WORK/teach"; senv "$D"; mkdir -p "$D/bin"
+    printf '#!/bin/bash\nexec python3 -I "%s/fake_claude.py"\n' "$TSRC" > "$D/bin/claude"; chmod +x "$D/bin/claude"
+    sing "$ROOT/tests/fixtures/book-labels.pdf" --slug bk > "$D/ing.log" 2>&1 || bad "teach: fixture ingests" "$(tail -3 "$D/ing.log")"
+    S="$SCHOLA_SOURCES_DIR/bk"; U=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))[0]["id"])' "$S/units.json")
+    o=$(bash "$BR" list 2>&1); [[ "$o" == bk* ]] && ok "teach: list shows the source" || bad "teach: list shows the source" "$o"
+    o=$(bash "$BR" units bk 2>&1); grep -q "^$U | " <<<"$o" && ok "teach: units prints the unit map" || bad "teach: units prints the unit map" "$o"
+    for a in "units ../x" "units nosuch" "brief bk u999" "mark bk $U finished" "mark bk $U done --score lots"; do
+      bash "$BR" $a >/dev/null 2>&1 && bad "teach: refuses '$a'" "exit 0" || ok "teach: refuses '$a'"
+    done
+    bash "$BR" mark bk "$U" done --score 3/4 --note 'kv cache | revisit' >/dev/null 2>&1
+    grep -q "| $U | .* | done | 3/4 | kv cache / revisit |" "$D/vault/sources/bk/progress.md" && ok "teach: mark mirrors progress to the vault" || bad "teach: mark mirrors progress to the vault" "$(grep "$U" "$D/vault/sources/bk/progress.md")"
+    bash "$BR" units bk | grep -q "^$U | .* | done 3/4 | " && ok "teach: units shows progress" || bad "teach: units shows progress" "$(bash "$BR" units bk | grep "^$U")"
+    o=$(PATH="$D/bin:$PATH" FAKE_CLAUDE=fail bash "$BR" brief bk "$U" 2>&1); rc=$?
+    [ $rc != 0 ] && [ ! -f "$S/briefs/$U.md" ] && ok "teach: failed librarian run caches nothing" || bad "teach: failed librarian run caches nothing" "rc=$rc $o"
+    o=$(PATH="$D/bin:$PATH" FAKE_CLAUDE=bad bash "$BR" brief bk "$U" 2>&1); rc=$?
+    [ $rc != 0 ] && [ ! -f "$S/briefs/$U.md" ] && ok "teach: unverifiable brief is rejected, not cached" || bad "teach: unverifiable brief is rejected, not cached" "rc=$rc $o"
+    o=$(PATH="$D/bin:$PATH" FAKE_CLAUDE=ok bash "$BR" brief bk "$U" 2>&1); rc=$?
+    [ $rc = 0 ] && grep -q "verified" <<<"$o" && grep -qE '\((p\. |PDF p\. )[^:]+: “' <<<"$o" && ! grep -q '\[\[cite:' <<<"$o" \
+      && ok "teach: brief verified and rendered with pages" || bad "teach: brief verified and rendered with pages" "rc=$rc $o"
+    grep -q "^## Where" <<<"$o" && ok "teach: Where line written by code" || bad "teach: Where line written by code" "$o"
+    o2=$(PATH="$D/bin:$PATH" FAKE_CLAUDE=fail bash "$BR" brief bk "$U" 2>&1)
+    [ "$o2" = "$o" ] && ok "teach: second brief call uses the cache" || bad "teach: second brief call uses the cache" "$o2"
+    printf '\n## Further reading\n- tampered [[cite:%s "words that the book never says at all"]]\n' "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))[0]["span_start"])' "$S/units.json")" >> "$S/briefs/$U.md"
+    bash "$BR" brief bk "$U" | grep -q "(citation removed)" && ok "teach: a cite edited in the cache renders as removed" || bad "teach: a cite edited in the cache renders as removed" "$(bash "$BR" brief bk "$U" | tail -2)"
+  fi
+fi
+
 echo "== source-git =="
 if want source-git; then
   tracked=$(cd "$ROOT" && git ls-files | grep -vE '^(tests/fixtures|spikes/fixtures-src)/' | grep -iE '\.(pdf|epub|jp2|jpe?g|png)$|(^|/)segments/|spans\.jsonl|labels\.json|units\.json|xrefs\.json|/briefs/|AIBooks|Huyen' | grep -vE '^assets/')
