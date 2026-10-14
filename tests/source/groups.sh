@@ -434,6 +434,8 @@ if want source-teach; then
     [ "$o2" = "$o" ] && ok "teach: second brief call uses the cache" || bad "teach: second brief call uses the cache" "$o2"
     printf '\n## Further reading\n- tampered [[cite:%s "words that the book never says at all"]]\n' "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))[0]["span_start"])' "$S/units.json")" >> "$S/briefs/$U.md"
     bash "$BR" brief bk "$U" | grep -q "(citation removed)" && ok "teach: a cite edited in the cache renders as removed" || bad "teach: a cite edited in the cache renders as removed" "$(bash "$BR" brief bk "$U" | tail -2)"
+    [ -f "$S/briefs/$U.verify.json" ] && ok "teach: verify.json created alongside brief" || bad "teach: verify.json created alongside brief" "missing"
+    tally "teach b2: " < <(python3 -I "$TSRC/check_b2.py" "$HOOKS" "$D/b2_run" 2>&1)
   fi
 fi
 
