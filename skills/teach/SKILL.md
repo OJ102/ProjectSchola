@@ -138,9 +138,9 @@ Repeat this full loop per node — don't front-load all the foundations once at 
 
 If you catch yourself asserting a fact he'd have to take on faith — foundational or not — stop: either motivate it and confirm it lands, or ground it in something already established. Unmotivated, unconfirmed facts don't lock in — that's the whole point.
 
-## Source mode — teaching from an ingested book
+## Source mode — teaching from an ingested book or source
 
-Use this when `/teach` names an ingested source (a slug, or "the book"), or the user asks to be taught from a book they ran `/ingest` on. Everything above still applies; the source changes where the content comes from.
+Use this when `/teach` names an ingested source (a PDF, EPUB, web article, Markdown document, Jupyter notebook, or video caption), or the user asks to be taught from a source they ran `/ingest` on. Everything above still applies; the source changes where the content comes from. Ingested sources are cataloged in `library.md` in your vault root.
 
 **One helper, six commands.** Run each exactly as shown, with the slug and unit id as plain arguments:
 

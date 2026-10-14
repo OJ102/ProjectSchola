@@ -437,6 +437,7 @@ if want source-teach; then
     [ -f "$S/briefs/$U.verify.json" ] && ok "teach: verify.json created alongside brief" || bad "teach: verify.json created alongside brief" "missing"
     tally "teach b2: " < <(python3 -I "$TSRC/check_b2.py" "$HOOKS" "$D/b2_run" 2>&1)
     tally "teach b3: " < <(python3 -I "$TSRC/check_b3.py" "$HOOKS" "$D/b3_run" 2>&1)
+    tally "teach b4: " < <(python3 -I "$TSRC/check_b4.py" "$HOOKS" "$D/b4_run" 2>&1)
   fi
 fi
 

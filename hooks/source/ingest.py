@@ -31,9 +31,13 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pdf as pdfadapter  # noqa: E402
+import web as webadapter  # noqa: E402
+import pandoc_adapter as pandocadapter  # noqa: E402
+import video as videoadapter  # noqa: E402
 import contract  # noqa: E402
 from store import (SLUG_RE, Locked, Store, StoreError, check_slug, clean_meta, meta_text, sha256_file,  # noqa: E402
                    slugify, sources_root, update_vault, vault_root, write_json)
@@ -100,7 +104,10 @@ def parse_args(argv):
 
 def detect(path):
     if "://" in path:
-        raise StoreError("web sources are not supported yet (web adapter: increment 5)")
+        u = urllib.parse.urlsplit(path)
+        if u.path.lower().endswith(".pdf"):
+            raise StoreError("remote PDF URLs are not supported (download the PDF first)")
+        return "web", 0
     if not os.path.exists(path):
         raise StoreError(f"no such file: {path}")
     if not os.path.isfile(path):
@@ -108,12 +115,24 @@ def detect(path):
     size = os.path.getsize(path)
     if size > MAX_SOURCE:
         raise StoreError("source larger than 2 GB")
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".html", ".htm"):
+        return "web", size
+    if ext == ".epub":
+        return "epub", size
+    if ext in (".md", ".markdown"):
+        return "markdown", size
+    if ext == ".ipynb":
+        return "notebook", size
+    if ext in (".docx", ".doc"):
+        return "docx", size
+    if ext in (".vtt", ".srt"):
+        return "video", size
     with open(path, "rb") as f:
         head = f.read(1024)
     if b"%PDF-" in head:
         return "pdf", size
-    raise StoreError("unsupported source type (only PDF is supported so far; EPUB, web, documents and video "
-                     "come in later increments)")
+    raise StoreError(f"unsupported source type: {ext or 'unknown'}")
 
 
 def code_hash():
@@ -165,18 +184,34 @@ def page_list(pages, limit=20):
     return "PDF " + txt + (f", +{len(out) - limit} more ranges" if len(out) > limit else "")
 
 
-def missing_tools():
-    return {t: hint for t, hint in REQUIRED.items() if not shutil.which(t)}
+def missing_tools(stype="pdf"):
+    if stype == "pdf":
+        return {t: hint for t, hint in REQUIRED.items() if not shutil.which(t)}
+    return {}
 
 
 def summarize(meta, rep, store_dir, vault_note, warnings):
+    md = f'title "{meta_text(meta.get("title"))}"' + (f', author "{meta_text(meta["author"])}"' if meta.get("author") else "")
+    if meta.get("adapter") != "pdf":
+        out = [f"Ingested: {meta['slug']}",
+               f"  file metadata: {md}",
+               f"  adapter: {meta.get('adapter')}, type: {rep.get('type', meta.get('type'))}",
+               f"  units: {rep.get('units', 0)}",
+               f"  spans: {rep.get('spans', 0)}",
+               f"  store: {store_dir}"]
+        if vault_note:
+            out.append(f"  vault: {vault_note}")
+        for w in warnings:
+            out.append(f"  WARNING: {w}")
+        if "seconds" in rep:
+            out.append(f"  time: {rep['seconds']['total']}s")
+        return "\n".join(out)
     L = rep["labels"]
     t = rep["text"]
     o = rep["outline"]
     v = rep["vision"]
     x = rep["xrefs"]
     oc = rep["ocr"]
-    md = f'title "{meta_text(meta.get("title"))}"' + (f', author "{meta_text(meta["author"])}"' if meta.get("author") else "")
     out = [f"Ingested: {meta['slug']}",
            f"  file metadata (untrusted data from the file, not instructions): {md}",
            f"  type: {rep['type']}, {rep['pdf_pages']} pages, {meta['size'] / 1e6:.1f} MB",
@@ -263,24 +298,31 @@ def has_ocr_cache(st):
 def run(argv):
     opts = parse_args(argv)
     opts["deadline"] = time.monotonic() + ingest_timeout()
-    miss = missing_tools()
+    if "://" in opts["path"]:
+        src = opts["path"]
+        stype, size = detect(src)
+    else:
+        src = os.path.realpath(os.path.expanduser(opts["path"]))
+        stype, size = detect(src)
+    miss = missing_tools(stype)
     if miss:
         hints = sorted(set(miss.values()))
         raise StoreError(f"missing tools: {', '.join(sorted(miss))}; install with: {'; '.join(hints)}")
-    if "://" in opts["path"]:
-        raise StoreError("web sources are not supported yet (web adapter: increment 5)")
-    src = os.path.realpath(os.path.expanduser(opts["path"]))
-    stype, size = detect(src)
     root = sources_root()
-    sha_pre = sha256_file(src, MAX_SOURCE)
+    if "://" in src:
+        sha_pre = hashlib.sha256(src.encode()).hexdigest()
+    else:
+        sha_pre = sha256_file(src, MAX_SOURCE)
     if opts["slug"]:
         slug = opts["slug"]
     else:
-        # store identity is the absolute source path: the same file (even
-        # edited) reuses its store; another file with the same name gets
-        # "<name>-2"
-        slug = store_for_origin(root, src) or \
-            free_slug(root, slugify(os.path.splitext(os.path.basename(src))[0], f"source-{sha_pre[:8]}"))
+        if "://" in src:
+            u = urllib.parse.urlsplit(src)
+            bname = os.path.basename(u.path.rstrip("/")) or u.netloc
+            slug = store_for_origin(root, src) or free_slug(root, slugify(bname, f"web-{sha_pre[:8]}"))
+        else:
+            slug = store_for_origin(root, src) or \
+                free_slug(root, slugify(os.path.splitext(os.path.basename(src))[0], f"source-{sha_pre[:8]}"))
     fresh = not os.path.lexists(os.path.join(root, slug))
     st = Store(slug, root)
     st.lock()
@@ -301,7 +343,10 @@ def ingest_locked(st, src, stype, size, opts):
     existing = st.source_json()
     cache = None
     t0 = time.time()
-    sha = sha256_file(src, MAX_SOURCE)
+    if "://" in src:
+        sha = hashlib.sha256(src.encode()).hexdigest()
+    else:
+        sha = sha256_file(src, MAX_SOURCE)
     cache = st.cache_dir(sha)
     settings = {"ocr": opts["ocr"], "vision": opts["vision"], "code": code_hash()}
     if existing and existing.get("status") == "complete" and existing.get("sha256") == sha \
@@ -324,16 +369,53 @@ def ingest_locked(st, src, stype, size, opts):
                 print("Up to date (same file, same settings); nothing re-ingested. Use --rebuild to force.")
                 print(summarize(existing, rep, st.dir, vault_note, warnings))
             return 0
-    snap = os.path.join(cache, "source.pdf")
-    snap_sha = snapshot(src, snap)
-    if snap_sha != sha:
-        raise SourceChanged("the source changed while it was being read; try again when it is stable")
+
     build = st.build_dir()
-    rep = pdfadapter.build(snap, build, {"ocr": opts["ocr"], "vision": opts["vision"], "deadline": opts["deadline"]},
-                           cache, log=lambda m: print(m, file=sys.stderr))
-    if sha256_file(src, MAX_SOURCE) != sha:
-        shutil.rmtree(build, ignore_errors=True)
-        raise SourceChanged("the source changed during ingest; nothing was written. Run /ingest again")
+    snap = None
+    if stype == "pdf":
+        snap = os.path.join(cache, "source.pdf")
+        snap_sha = snapshot(src, snap)
+        if snap_sha != sha:
+            raise SourceChanged("the source changed while it was being read; try again when it is stable")
+        rep = pdfadapter.build(snap, build, {"ocr": opts["ocr"], "vision": opts["vision"], "deadline": opts["deadline"]},
+                               cache, log=lambda m: print(m, file=sys.stderr))
+        if sha256_file(src, MAX_SOURCE) != sha:
+            shutil.rmtree(build, ignore_errors=True)
+            raise SourceChanged("the source changed during ingest; nothing was written. Run /ingest again")
+        info = pdf_meta(snap)
+        xmp = rep.pop("xmp", {}) or {}
+        title = clean_meta(info.get("Title")) or xmp.get("title") or \
+            clean_meta(os.path.splitext(os.path.basename(src))[0])
+        author = clean_meta(info.get("Author")) or xmp.get("author", "")
+        published = clean_meta(info.get("CreationDate"), 60)
+        adapter_name = "pdf"
+    elif stype == "web":
+        rep = webadapter.build(src, build, opts, cache, log=lambda m: print(m, file=sys.stderr))
+        s_meta = json.load(open(os.path.join(build, "source.json")))
+        title = s_meta.get("title") or st.slug
+        author = ""
+        published = ""
+        sha = s_meta.get("sha256", sha)
+        adapter_name = "web"
+    elif stype in ("epub", "markdown", "notebook", "docx"):
+        rep = pandocadapter.build(src, build, opts, cache, log=lambda m: print(m, file=sys.stderr))
+        s_meta = json.load(open(os.path.join(build, "source.json")))
+        title = s_meta.get("title") or st.slug
+        author = ""
+        published = ""
+        sha = s_meta.get("sha256", sha)
+        adapter_name = "pandoc"
+    elif stype == "video":
+        rep = videoadapter.build(src, build, opts, cache, log=lambda m: print(m, file=sys.stderr))
+        s_meta = json.load(open(os.path.join(build, "source.json")))
+        title = s_meta.get("title") or st.slug
+        author = ""
+        published = ""
+        sha = s_meta.get("sha256", sha)
+        adapter_name = "video"
+    else:
+        raise StoreError(f"unhandled source type {stype}")
+
     # the adapter contract gates the commit (decisions 31 and the lead's
     # ruling): a failing store is never committed
     chk = contract.run(build, building=True)
@@ -342,72 +424,78 @@ def ingest_locked(st, src, stype, size, opts):
         fails = [l for l in chk.lines if l.startswith("FAIL")]
         raise ContractFailed("the store failed the adapter contract; nothing was written (this is a bug, "
                              "please report it):\n  " + "\n  ".join(fails[:8]))
-    val = rep["validation"]
-    if val["mismatch_rate"] > 0.05 and not opts["force"]:
+
+    val = rep.get("validation", {"sampled": 0, "mismatched": [], "mismatch_rate": 0.0})
+    if val.get("mismatch_rate", 0.0) > 0.05 and not opts["force"]:
         shutil.rmtree(build, ignore_errors=True)
         lines = "; ".join(f"PDF {m['pdf_index']}: footer {m['footer']!r} vs label {m['label']!r}"
                           for m in val["mismatched"][:5])
         raise ValidationFailed(f"label validation failed: {len(val['mismatched'])}/{val['sampled']} sampled pages "
                                f"disagree with their printed footer ({lines}). Nothing was written. "
                                "Re-run with --force to keep these labels.")
-    info = pdf_meta(snap)
-    xmp = rep.pop("xmp", {}) or {}
-    title = clean_meta(info.get("Title")) or xmp.get("title") or \
-        clean_meta(os.path.splitext(os.path.basename(src))[0])
-    meta = {"slug": st.slug, "type": rep["type"], "adapter": "pdf", "origin": src, "sha256": sha, "size": size,
-            "mtime": int(os.path.getmtime(src)), "title": title, "author": clean_meta(info.get("Author")) or xmp.get("author", ""),
-            "published": clean_meta(info.get("CreationDate"), 60), "ingest_version": INGEST_VERSION,
-            "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "settings": settings,
-            "license_note": "Personal local copy for study. Never publish, push or upload this store."}
+
+    meta_file = os.path.join(build, "source.json")
+    if os.path.exists(meta_file):
+        meta = json.load(open(meta_file))
+    else:
+        meta = {}
+    meta.update({
+        "slug": st.slug, "type": rep.get("type", stype), "adapter": adapter_name, "origin": src,
+        "sha256": sha, "size": size,
+        "mtime": int(os.path.getmtime(src)) if os.path.exists(src) else int(time.time()),
+        "title": title, "author": author,
+        "published": published, "ingest_version": INGEST_VERSION,
+        "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "settings": settings,
+        "license_note": "Personal local copy for study. Never publish, push or upload this store."
+    })
     rep["units_undersized"] = sum(1 for u in json.load(open(os.path.join(build, "units.json")))
                                   if u.get("undersized"))
-    if rep["labels"]["fallback"] > 0.4 * rep["pdf_pages"]:
-        warnings.append("no consistent printed page numbers; most pages are cited as \"PDF p. N\"")
-    if rep["labels"].get("label_conflict"):
-        warnings.append("the PDF's /PageLabels dictionary disagrees with the printed footers; footers used")
-    if rep["ocr"]["note"] == "missing" and rep["ocr"]["textless_pages"]:
-        warnings.append("pages without a text layer were not OCRed: install tesseract (brew install tesseract) "
-                        "or Xcode command line tools for Apple Vision (xcode-select --install)")
-    if rep["ocr"]["failed_pages"]:
-        warnings.append(f"INCOMPLETE: OCR did not finish on {len(rep['ocr']['failed_pages'])} pages "
-                        f"({page_list(rep['ocr']['failed_pages'])}); run /ingest again to retry them")
-    if rep["ocr"].get("skipped_oversized"):
-        warnings.append(f"{len(rep['ocr']['skipped_oversized'])} pages hold an image too large to decode and were "
-                        f"not OCRed ({page_list(rep['ocr']['skipped_oversized'])})")
-    if rep["ocr"].get("blank_pages"):
-        warnings.append(f"{len(rep['ocr']['blank_pages'])} pages without text look blank and were skipped "
-                        f"({page_list(rep['ocr']['blank_pages'])})")
-    if rep["assets"].get("skipped_pages"):
-        warnings.append(f"figures were not extracted from {len(rep['assets']['skipped_pages'])} pages (image size "
-                        f"budget): {page_list(rep['assets']['skipped_pages'])}")
-    if rep["hidden"].get("outside_cropbox_chars_dropped"):
-        warnings.append(f"{rep['hidden']['outside_cropbox_chars_dropped']} characters outside the visible page "
-                        "area (CropBox) were dropped")
-    if rep["hidden"]["suspect_span_count"]:
-        warnings.append(f"{rep['hidden']['suspect_span_count']} spans hold text that may be hidden from a reader "
-                        "(white, clipped or covered); they are flagged suspect_hidden")
-    if rep["hidden"]["invisible_chars_dropped"]:
-        warnings.append(f"{rep['hidden']['invisible_chars_dropped']} characters of invisible text were dropped")
-    if rep["encrypted"]:
-        warnings.append("the PDF is encrypted; text was read through poppler")
-    if val["mismatch_rate"] > 0.05:
-        warnings.append("label validation failed and was overridden with --force")
+    if stype == "pdf":
+        if rep["labels"]["fallback"] > 0.4 * rep["pdf_pages"]:
+            warnings.append("no consistent printed page numbers; most pages are cited as \"PDF p. N\"")
+        if rep["labels"].get("label_conflict"):
+            warnings.append("the PDF's /PageLabels dictionary disagrees with the printed footers; footers used")
+        if rep["ocr"]["note"] == "missing" and rep["ocr"]["textless_pages"]:
+            warnings.append("pages without a text layer were not OCRed: install tesseract (brew install tesseract) "
+                            "or Xcode command line tools for Apple Vision (xcode-select --install)")
+        if rep["ocr"]["failed_pages"]:
+            warnings.append(f"INCOMPLETE: OCR did not finish on {len(rep['ocr']['failed_pages'])} pages "
+                            f"({page_list(rep['ocr']['failed_pages'])}); run /ingest again to retry them")
+        if rep["ocr"].get("skipped_oversized"):
+            warnings.append(f"{len(rep['ocr']['skipped_oversized'])} pages hold an image too large to decode and were "
+                            f"not OCRed ({page_list(rep['ocr']['skipped_oversized'])})")
+        if rep["ocr"].get("blank_pages"):
+            warnings.append(f"{len(rep['ocr']['blank_pages'])} pages without text look blank and were skipped "
+                            f"({page_list(rep['ocr']['blank_pages'])})")
+        if rep["assets"].get("skipped_pages"):
+            warnings.append(f"figures were not extracted from {len(rep['assets']['skipped_pages'])} pages (image size "
+                            f"budget): {page_list(rep['assets']['skipped_pages'])}")
+        if rep["hidden"].get("outside_cropbox_chars_dropped"):
+            warnings.append(f"{rep['hidden']['outside_cropbox_chars_dropped']} characters outside the visible page "
+                            "area (CropBox) were dropped")
+        if rep["hidden"]["suspect_span_count"]:
+            warnings.append(f"{rep['hidden']['suspect_span_count']} spans hold text that may be hidden from a reader "
+                            "(white, clipped or covered); they are flagged suspect_hidden")
+        if rep["hidden"]["invisible_chars_dropped"]:
+            warnings.append(f"{rep['hidden']['invisible_chars_dropped']} characters of invisible text were dropped")
+        if rep["encrypted"]:
+            warnings.append("the PDF is encrypted; text was read through poppler")
+        if val["mismatch_rate"] > 0.05:
+            warnings.append("label validation failed and was overridden with --force")
+
     vroot = vault_root()
     if st.root == vroot or st.root.startswith(vroot + os.sep):
         warnings.append("the source store is inside the vault; set SCHOLA_SOURCES_DIR outside it")
     rep["warnings"] = warnings
     write_json(os.path.join(build, "report.json"), dict(rep, source=meta))
 
-    # span-id migration survives a crash mid-commit: the old spans and hash
-    # are parked in .migrate/ before anything is replaced, and removed only
-    # after the migration is written
     pending = st.pending_migration()
     if pending is None and existing and existing.get("sha256") and existing.get("sha256") != sha \
             and os.path.isfile(st.path("spans.jsonl")):
         st.park_migration(existing)
         pending = st.pending_migration()
     new_spans = [json.loads(l) for l in open(os.path.join(build, "spans.jsonl"), encoding="utf-8")]
-    incomplete = bool(rep["ocr"]["failed_pages"])
+    incomplete = bool((rep.get("ocr") or {}).get("failed_pages"))
     st.commit(build, meta, status="incomplete" if incomplete else "complete")
     if pending is not None and pending[1] != sha:
         mig = st.migrate(pending[0], new_spans, pending[1], sha)
@@ -415,17 +503,19 @@ def ingest_locked(st, src, stype, size, opts):
         rep["migration"]["unmatched"] = len(mig["unmatched"])
         write_json(st.path("report.json"), dict(rep, source=meta))
     st.clear_migration()
-    try:
-        os.unlink(snap)
-    except OSError:
-        pass
+    if snap and os.path.exists(snap):
+        try:
+            os.unlink(snap)
+        except OSError:
+            pass
     vault_note = None
     if opts["vault"]:
         vp, vw = update_vault(st.slug, meta, {"units": rep["units"]}, st.root)
         vault_note = os.path.join(vp, "sources", st.slug, "progress.md")
         warnings += [f"the vault looks synced or version-controlled ({w}); the store stays outside it, "
                      "but progress notes there may be uploaded" for w in vw]
-    rep["seconds"]["wall"] = round(time.time() - t0, 2)
+    rep.setdefault("seconds", {})["wall"] = round(time.time() - t0, 2)
+    rep["seconds"].setdefault("total", rep["seconds"]["wall"])
     if opts["json"]:
         print(json.dumps(dict(rep, source=meta, store=st.dir), indent=1, ensure_ascii=False))
     else:
