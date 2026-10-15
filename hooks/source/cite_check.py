@@ -549,8 +549,10 @@ def fail_closed(session_id, why):
         log_file = session_log(session_id)
         if log_file:
             strip_tokens(log_file, "(citation removed: cite check failed)")
+        return True
     except Exception as e:  # noqa: BLE001 - last resort, say so
         print(f"source cite check: could not neutralize the log either ({type(e).__name__}: {e})", file=sys.stderr)
+        return False
 
 
 def check_log(session_id, entries):
@@ -612,7 +614,8 @@ def run_hook(stdin_data=None):
                     continue
         check_log(session_id, entries)
     except Exception as e:  # noqa: BLE001 - fail closed on anything, including LockError
-        fail_closed(session_id, f"{type(e).__name__}: {e}")
+        # exit 1 only if the tokens could not be stripped: md-log-stop-hook.sh then strips them itself
+        sys.exit(0 if fail_closed(session_id, f"{type(e).__name__}: {e}") else 1)
     sys.exit(0)
 
 

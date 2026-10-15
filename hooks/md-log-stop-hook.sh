@@ -95,14 +95,20 @@ select((.isSidechain // false) | not)
 
 # Source mode: check the tutor's citations in the rendered note before it is moved into place, still
 # under the lock, so no live citation token ever reaches the vault and no render can land after the
-# check. Exits at once for other sessions (hooks/source/cite_check.py).
+# check. Exits at once for other sessions (hooks/source/cite_check.py). If the check itself fails,
+# the note's citation tokens are stripped; if even that fails, the note is not moved into place.
 CITE_CHECK="$(cd "$(dirname "$0")" && pwd)/source/cite_check.py"
 cite_check_note() {
-  [ -f "$CITE_CHECK" ] && MD_LOG_LOCK_HELD="$LOCK_ME" MD_LOG_FILE="$1" python3 -I "$CITE_CHECK" --hook <<<"$INPUT"
-  return 0
+  [ -f "$CITE_CHECK" ] || return 0
+  MD_LOG_LOCK_HELD="$LOCK_ME" MD_LOG_FILE="$1" python3 -I "$CITE_CHECK" --hook <<<"$INPUT" && return 0
+  LC_ALL=C sed -E 's/\[\[cite:[^]]*\]\]/(citation removed: cite check failed)/g; s/\[\[/[ [/g; s/\]\]/] ]/g' "$1" > "$1.s" \
+    && mv -f "$1.s" "$1"
 }
 
-TMP="${LOG_FILE}.tmp.$$"
+# The temp note lives in the state dir, never in the vault (a sync client must not see it); a leftover
+# from a killed render is removed here.
+TMP="${LOCK%.lock}.md.tmp.$$"
+rm -f "${LOCK%.lock}".md.tmp.* "${LOCK%.lock}".md.tmp.*.s "$SESSIONS_DIR"/*.md.tmp.[0-9]* 2>/dev/null
 {
   echo "---"
   echo "session: $SESSION_ID"

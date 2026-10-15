@@ -499,8 +499,8 @@ seen, stop = [], threading.Event()
 def poll():
     d = os.path.join(vault_root, "sessions")
     while not stop.is_set():
-        for n in os.listdir(d):
-            if n.endswith(".md"):
+        for n in os.listdir(d):   # every file, temp files included
+            if True:
                 try:
                     if "[[cite:" in open(os.path.join(d, n), encoding="utf-8", errors="replace").read():
                         seen.append(n)
@@ -529,3 +529,33 @@ subprocess.run(["bash", cite_check_sh], input=json.dumps({"transcript_path": tr_
 lt = open(lp, encoding="utf-8").read()
 o("hook: natural-language teach naming the slug is checked against that source",
   "[[cite:" not in lt and "quote not found" in lt and "(p. 10)" in lt, lt)
+
+# md-log temp note: lives in the state dir, a leftover is removed, and a crashed check never lets
+# the raw text through
+key = md_sid.replace("/", "_")
+left_state = os.path.join(state_root, f"{key}.md.tmp.99999")
+left_vault = os.path.join(vault_root, "sessions", "old note.md.tmp.4242")
+for pth in (left_state, left_vault):
+    with open(pth, "w") as f:
+        f.write("leftover [[cite:p0010.1]]\n")
+subprocess.run(["bash", os.path.join(HOOKS_DIR, "md-log-stop-hook.sh")], input=md_input,
+               capture_output=True, text=True, env=hook_env, timeout=120)
+o("md-log: leftover temp notes (state dir and vault) are removed", not os.path.exists(left_state) and not os.path.exists(left_vault))
+o("md-log: no temp note is left in the vault or state dir",
+  not [n for n in os.listdir(os.path.join(vault_root, "sessions")) if ".tmp" in n]
+  and not [n for n in os.listdir(state_root) if ".tmp" in n])
+crash_bin = os.path.join(hook_work, "crashbin")
+os.makedirs(crash_bin, exist_ok=True)
+with open(os.path.join(crash_bin, "python3"), "w") as f:
+    f.write("#!/bin/sh\nexit 1\n")
+os.chmod(os.path.join(crash_bin, "python3"), 0o755)
+r_cr = subprocess.run(["bash", os.path.join(HOOKS_DIR, "md-log-stop-hook.sh")], input=md_input, capture_output=True,
+                      text=True, env=dict(hook_env, PATH=crash_bin + os.pathsep + hook_env["PATH"]), timeout=120)
+md_text = open(md_logs[0], encoding="utf-8").read() if md_logs and os.path.exists(md_logs[0]) else ""
+if not md_text:
+    for n in os.listdir(os.path.join(vault_root, "sessions")):
+        t = open(os.path.join(vault_root, "sessions", n), encoding="utf-8", errors="replace").read()
+        if md_sid in t:
+            md_text = t
+o("md-log: a crashed cite check writes the token-stripped note, never the raw one",
+  bool(md_text) and "[[cite:" not in md_text and "cite check failed" in md_text, f"{md_text[-300:]} {r_cr.stderr[-200:]}")
