@@ -1,7 +1,7 @@
 {
   "name": "learn-voice-teacher",
-  "version": "0.1.0",
-  "description": "Learning system with voice conversation support",
+  "version": "0.2.0",
+  "description": "Learning system with voice conversation support and verified source-mode textbook ingestion",
   "author": {
     "name": "Om Jadhav"
   }
