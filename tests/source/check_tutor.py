@@ -510,3 +510,16 @@ for _ in range(15):
 stop.set()
 th.join()
 o("md-log: no raw [[cite: token is ever visible in the vault during renders", not seen, sorted(set(seen)))
+
+# A natural-language teach request naming the source's slug is a source session
+tr_nl = os.path.join(hook_work, "tr_nl.jsonl")
+with open(tr_nl, "w", encoding="utf-8") as f:
+    f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "please teach me the tides source"}}) + "\n")
+lp = os.path.join(vault_root, "sessions", "2026-10-14 nl.md")
+with open(lp, "w", encoding="utf-8") as f:
+    f.write("---\nsession: test-session-nl\n---\nTutor: \"the moon alone causes every tide\" [[cite:p0010.1]] ok [[cite:p0010.1]]\n")
+subprocess.run(["bash", cite_check_sh], input=json.dumps({"transcript_path": tr_nl, "session_id": "test-session-nl"}),
+               capture_output=True, text=True, env=hook_env)
+lt = open(lp, encoding="utf-8").read()
+o("hook: natural-language teach naming the slug is checked against that source",
+  "[[cite:" not in lt and "quote not found" in lt and "(p. 10)" in lt, lt)

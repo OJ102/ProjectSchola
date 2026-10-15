@@ -249,6 +249,29 @@ BRIEF_CMD = re.compile(r"(?:source-brief\.sh|brief\.py)\s+(units|brief|mark|fast
 UNIT_CMDS = {"brief", "mark", "fastpath", "factcheck"}
 
 
+def slug_in_teach_text(entries):
+    """A natural-language teach request ("teach me chapter 2 of graphs-book") that names an ingested
+    source by its slug."""
+    try:
+        root = st.sources_root()
+        slugs = {n for n in os.listdir(root) if os.path.isfile(os.path.join(root, n, "spans.jsonl"))}
+    except OSError:
+        return None
+    if not slugs:
+        return None
+    for e in entries:
+        if e.get("type") != "user":
+            continue
+        content = (e.get("message") or {}).get("content")
+        text = content if isinstance(content, str) else " ".join(
+            c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text") if isinstance(content, list) else ""
+        if re.search(r"\bteach", text, re.I):
+            for w in re.findall(r"[a-z0-9][a-z0-9_-]*", text.lower()):
+                if w in slugs:
+                    return w
+    return None
+
+
 def detect_source_session(entries):
     """Inspect transcript entries to find (slug, store_dir, taught_units, brief_paths)."""
     slug = None
@@ -323,6 +346,9 @@ def detect_source_session(entries):
                         taught_units.add(unit)
 
     resolved_store = store_dir or (resolve_store_path(slug) if slug else None)
+    if not resolved_store:
+        slug = slug_in_teach_text(entries)
+        resolved_store = resolve_store_path(slug) if slug else None
     if not resolved_store:
         return None, None, set(), set()
 
