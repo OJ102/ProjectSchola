@@ -23,3 +23,4 @@ spikes/out/
 spikes/fixtures-src/*.aux
 spikes/fixtures-src/*.out
 spikes/fixtures-src/*.pdf
+adversarial/
