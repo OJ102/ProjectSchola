@@ -93,6 +93,15 @@ select((.isSidechain // false) | not)
 | try (entry | . + "\n") catch empty
 '
 
+# Source mode: check the tutor's citations in the rendered note before it is moved into place, still
+# under the lock, so no live citation token ever reaches the vault and no render can land after the
+# check. Exits at once for other sessions (hooks/source/cite_check.py).
+CITE_CHECK="$(cd "$(dirname "$0")" && pwd)/source/cite_check.py"
+cite_check_note() {
+  [ -f "$CITE_CHECK" ] && MD_LOG_LOCK_HELD="$LOCK_ME" MD_LOG_FILE="$1" python3 -I "$CITE_CHECK" --hook <<<"$INPUT"
+  return 0
+}
+
 TMP="${LOG_FILE}.tmp.$$"
 {
   echo "---"
@@ -104,16 +113,10 @@ TMP="${LOG_FILE}.tmp.$$"
   echo "# ${SAFE_TOPIC:-Teaching session}"
   echo ""
   jq -r "$JQ_PROGRAM" "$TRANSCRIPT_PATH" 2>/dev/null
-} > "$TMP" && mv -f "$TMP" "$LOG_FILE"
+} > "$TMP" && cite_check_note "$TMP" && mv -f "$TMP" "$LOG_FILE"
 
 if [ -n "$EXISTING" ] && [ "$EXISTING" != "$LOG_FILE" ]; then
   rm -f "$EXISTING"
 fi
-
-# Source mode: check the tutor's citations in the note just written, still under the lock, so no
-# render can land after the check. Exits at once for other sessions (hooks/source/cite_check.py).
-CITE_CHECK="$(cd "$(dirname "$0")" && pwd)/source/cite_check.py"
-[ -f "$CITE_CHECK" ] && [ -f "$LOG_FILE" ] && \
-  MD_LOG_LOCK_HELD="$LOCK_ME" MD_LOG_FILE="$LOG_FILE" python3 -I "$CITE_CHECK" --hook <<<"$INPUT"
 
 exit 0

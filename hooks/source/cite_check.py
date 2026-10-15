@@ -34,22 +34,35 @@ class LockError(RuntimeError):
     pass
 
 
-# Quoted runs: "…", “…”, «…», ‘…’ and '…' (single quotes only at word edges, so "don't" is not one).
-QUOTED = re.compile(r'"([^"]+)"|“([^”]+)”|«([^»]+)»|(?<!\w)‘(.+?)’(?!\w)|(?<!\w)\'(.+?)\'(?!\w)', re.S)
+# Quoted runs. Any double-style mark opens or closes (straight, curly, low-9 „, fullwidth ＂, prime ″,
+# guillemets «» ‹›, CJK 「」『』〝〞), so mixed pairs like “…" count too; single quotes (' ‘ ’ ‚ ′)
+# only at word edges, so "don't" is not one. An unbalanced mark pairs with the next one: the odd run
+# is then checked too (fails closed).
+DQ = "\"“”„‟＂″〃«»‹›「」『』〝〞〟"
+SQ = "'‘’‚‛′"
+QUOTED = re.compile(rf"[{DQ}]([^{DQ}]+)[{DQ}]|(?<!\w)[{SQ}](.+?)[{SQ}](?!\w)", re.S)
 REMOVED = re.compile(r"\(citation removed(?:: quote not found in the source)?\)")
 
 
-def quotes_before(text, start, floor):
-    """Every quoted run (>= 3 chars) in the text a cite token covers: from the end of the previous
-    cite token (or the paragraph start) up to the token. Tolerates markdown and multi-line quotes."""
-    lo = max(floor, text.rfind("\n\n", 0, start) + 1)
+def quoted_runs(text, lo, hi):
     out = []
-    for m in QUOTED.finditer(text, lo, start):
-        q = next(g for g in m.groups() if g is not None)
-        q = q.strip(" *_`~")
+    for m in QUOTED.finditer(text, lo, hi):
+        q = next(g for g in m.groups() if g is not None).strip(" *_`~")
         if len(q.strip()) >= 3:
             out.append(q)
     return out
+
+
+def quotes_near(text, m, floor):
+    """Every quoted run a cite token covers: before it, from the end of the last cite that rendered
+    (or the paragraph start); after it, to the end of the line when no other cite follows on that
+    line (a quote between two cites belongs to the next one)."""
+    start, end = m.start(), m.end()
+    lo = max(floor, text.rfind("\n\n", 0, start) + 1)
+    pend = text.find("\n", end)
+    pend = len(text) if pend == -1 else pend
+    nxt = TUTOR_CITE.search(text, end, pend)
+    return quoted_runs(text, lo, start) + ([] if nxt else quoted_runs(text, end, pend))
 
 
 def quote_in(q, span_text):
@@ -63,20 +76,25 @@ def check_reply(text, spans, order, allowed, store):
     A cite renders as its locator only if:
       - id is in allowed and in spans;
       - anchor (if provided) verifies in that span;
-      - every quoted run before it (back to the previous cite or paragraph start) is in that span.
+      - every quoted run around it (see quotes_near) is in that span.
     Quotes all found in another span re-point the citation there ONLY if it is in allowed.
     Quote found nowhere in allowed removes citation with explanation.
     Decision 31: no live [[cite: or ]] sequences survive.
     """
     issues = []
 
-    floor = [0]   # end of the previous cite token: a quote belongs to the next token only
+    # floor: where the quotes a cite covers start, normally the end of the previous cite. A removed
+    # cite's quotes carry over to a cite right next to it ("q" [[cite:bad]][[cite:good]]).
+    floor, prev = [0], [None]   # prev: (end, removed, floor it used)
 
     def sub(m):
-        try:
-            return render(m)
-        finally:
-            floor[0] = m.end()
+        if prev[0]:
+            end, removed, used = prev[0]
+            floor[0] = used if removed and not re.search(r"\w", text[end:m.start()]) else end
+        used = floor[0]
+        out = render(m)
+        prev[0] = (m.end(), out.startswith("(citation removed"), used)
+        return out
 
     def render(m):
         sid, anchor = m.group(1), m.group(2)
@@ -93,7 +111,7 @@ def check_reply(text, spans, order, allowed, store):
                     "problem": f"forged anchor: {why}",
                 }))
                 return "(citation removed)"
-        quotes = quotes_before(text, m.start(), floor[0])
+        quotes = quotes_near(text, m, floor[0])
         bad = [q for q in quotes if not quote_in(q, spans[sid]["text"])]
         if bad:
             # Re-point ONLY to a span in allowed that holds every one of the quotes
@@ -216,6 +234,12 @@ def resolve_store_path(slug_or_dir):
     return None
 
 
+# Any source-brief.sh / brief.py subcommand that names a source marks a source session.
+BRIEF_CMD = re.compile(r"(?:source-brief\.sh|brief\.py)\s+(units|brief|mark|fastpath|factcheck|review|where)"
+                       r"\s+['\"]?([a-zA-Z0-9_-]+)['\"]?(?:\s+([a-zA-Z0-9_-]+))?")
+UNIT_CMDS = {"brief", "mark", "fastpath", "factcheck"}
+
+
 def detect_source_session(entries):
     """Inspect transcript entries to find (slug, store_dir, taught_units, brief_paths)."""
     slug = None
@@ -276,9 +300,9 @@ def detect_source_session(entries):
             if isinstance(c, dict) and c.get("type") == "tool_use":
                 inp = c.get("input") or {}
                 cmd = str(inp.get("command") or json.dumps(inp))
-                m_sb = re.search(r"source-brief\.sh\s+(units|brief|mark)\s+([a-zA-Z0-9_-]+)(?:\s+([a-zA-Z0-9_-]+))?", cmd)
+                m_sb = BRIEF_CMD.search(cmd)
                 if m_sb:
-                    s_cand = m_sb.group(2)
+                    sub_cmd, s_cand, unit = m_sb.groups()
                     res = resolve_store_path(s_cand)
                     if res:
                         try:
@@ -286,8 +310,8 @@ def detect_source_session(entries):
                             store_dir = res
                         except Exception:
                             pass
-                    if m_sb.group(3):
-                        taught_units.add(m_sb.group(3))
+                    if unit and sub_cmd in UNIT_CMDS:
+                        taught_units.add(unit)
 
     resolved_store = store_dir or (resolve_store_path(slug) if slug else None)
     if not resolved_store:
@@ -449,30 +473,41 @@ def session_log(session_id):
     return find_session_log(session_id)
 
 
+LIVE_TOKEN = re.compile(r"[\[［]\s*[\[［]\s*cite\s*[:：]", re.I)
+
+
+def strip_tokens(log_file, marker):
+    """Remove every citation token from the log. Returns True if the log held one."""
+    with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    frontmatter, body = split_frontmatter(content)
+    if not LIVE_TOKEN.search(neutralize(body).replace("[ [", "[[")):
+        return False
+    body = neutralize(TUTOR_CITE.sub(marker, body))
+    st.atomic_write(log_file, (frontmatter + body).encode("utf-8"), mode=0o644)
+    return True
+
+
 def fail_closed(session_id, why):
     """The check could not run: no live citation token may stay in the log (Decision 31)."""
     print(f"source cite check failed ({why}); citation tokens in the session log were removed", file=sys.stderr)
     try:
         log_file = session_log(session_id)
-        if not log_file:
-            return
-        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-        frontmatter, body = split_frontmatter(content)
-        if not re.search(r"cite\s*[:：]", body, re.I):
-            return
-        body = neutralize(TUTOR_CITE.sub("(citation removed: cite check failed)", body))
-        st.atomic_write(log_file, (frontmatter + body).encode("utf-8"), mode=0o644)
+        if log_file:
+            strip_tokens(log_file, "(citation removed: cite check failed)")
     except Exception as e:  # noqa: BLE001 - last resort, say so
         print(f"source cite check: could not neutralize the log either ({type(e).__name__}: {e})", file=sys.stderr)
 
 
 def check_log(session_id, entries):
     slug, store_dir, taught_units, brief_paths = detect_source_session(entries)
-    if not store_dir or not os.path.isdir(store_dir):
-        return
     log_file = session_log(session_id)
     if not log_file or not os.path.isfile(log_file):
+        return
+    if not store_dir or not os.path.isdir(store_dir):
+        # no source found for this session, yet the note holds citation tokens: none can be checked
+        with SessionLock(session_id):
+            strip_tokens(log_file, "(citation removed: no source found for this session)")
         return
     spans, order = sv.load_spans(store_dir)
     allowed = extract_allowed_spans(entries, store_dir, taught_units, brief_paths)

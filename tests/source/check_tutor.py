@@ -359,12 +359,22 @@ QUOTE_CASES = {
     "two_quotes_real": ('Both "driven by the gravitational pull" and "to a lesser degree" appear [[cite:p0010.1]].', True),
     "single_quoted_real": ("It's 'driven by the gravitational pull of the moon', don't forget [[cite:p0010.1]].", True),
     "quote_owned_by_earlier_cite": ('First "when the sun and moon align" [[cite:p0010.2]] then tides [[cite:p0010.1]].', True),
+    "quote_after_token": ('As the book puts it [[cite:p0010.1]]: "the moon alone causes every tide".', False),
+    "bad_cite_before_absorbs_nothing": ('"the moon alone causes every tide" [[cite:p9999.9]][[cite:p0010.1]]', False),
+    "german_quotes": ("„the moon alone causes every tide“ [[cite:p0010.1]]", False),
+    "cjk_quotes": ("「the moon alone causes every tide」 [[cite:p0010.1]]", False),
+    "fullwidth_quotes": ("＂the moon alone causes every tide＂ [[cite:p0010.1]]", False),
+    "mixed_curly_straight": ('“the moon alone causes every tide" [[cite:p0010.1]]', False),
+    "angle_single": ("‹the moon alone causes every tide› [[cite:p0010.1]]", False),
+    "prime_marks": ("″the moon alone causes every tide″ [[cite:p0010.1]]", False),
+    "german_real": ("„driven by the gravitational pull of the moon“ [[cite:p0010.1]]", True),
+    "removed_cite_then_unrelated_cite": ('"the moon alone causes every tide" [[cite:p9999.9]] and later tides [[cite:p0010.1]].', True),
 }
 for name, (txt, good) in QUOTE_CASES.items():
     r_q = subprocess.run(["bash", cite_check_sh, STORE_DIR, brief_path, "--text", txt], capture_output=True, text=True)
     out_q = r_q.stdout
     if good:
-        o(f"tutor quotes: {name} keeps its locator", "(p. 10)" in out_q and "removed" not in out_q, out_q.strip())
+        o(f"tutor quotes: {name} keeps its locator", "(p. 10)" in out_q and "quote not found" not in out_q, out_q.strip())
     else:
         o(f"tutor quotes: {name} is not given a locator", "(p. 10)" not in out_q and "quote not found" in out_q, out_q.strip())
 
@@ -436,3 +446,63 @@ md_prog = json.load(open(store_progress_path, encoding="utf-8"))
 drift = json.load(open(os.path.join(tides_store, "drift.json"), encoding="utf-8"))
 o("md-log re-render: drift for a session is not counted twice", drift.get(md_sid) == 2, drift)
 o("md-log: progress.json total is the sum over sessions", md_prog.get("drift_flagged_cites") == sum(drift.values()), (md_prog, drift))
+
+# A session that only used where/fastpath/review is still a source session
+for sub_cmd in ("where", "fastpath", "review"):
+    tr_w = os.path.join(hook_work, f"tr_{sub_cmd}.jsonl")
+    sid_w = f"test-session-{sub_cmd}"
+    with open(tr_w, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "teach me tides"}}) + "\n")
+        f.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Bash",
+                "input": {"command": f"bash /p/hooks/source-brief.sh {sub_cmd} tides u001"}}]}}) + "\n")
+    lp = os.path.join(vault_root, "sessions", f"2026-10-14 {sub_cmd}.md")
+    with open(lp, "w", encoding="utf-8") as f:
+        f.write(f"---\nsession: {sid_w}\n---\nTutor: \"the moon alone causes every tide\" [[cite:p0010.1]] ok [[cite:p0010.1]]\n")
+    subprocess.run(["bash", cite_check_sh], input=json.dumps({"transcript_path": tr_w, "session_id": sid_w}),
+                   capture_output=True, text=True, env=hook_env)
+    lt = open(lp, encoding="utf-8").read()
+    o(f"hook: session using only `{sub_cmd}` is checked", "[[cite:" not in lt and "quote not found" in lt and "(p. 10)" in lt, lt)
+
+# No source found, but the note holds citation tokens: they are removed
+tr_n = os.path.join(hook_work, "tr_nosrc.jsonl")
+with open(tr_n, "w", encoding="utf-8") as f:
+    f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "explain tides"}}) + "\n")
+lp = os.path.join(vault_root, "sessions", "2026-10-14 nosrc.md")
+with open(lp, "w", encoding="utf-8") as f:
+    f.write("---\nsession: test-session-nosrc\n---\nTutor: \"made up\" [[cite:p0010.1]] and a [[wikilink]].\n")
+subprocess.run(["bash", cite_check_sh], input=json.dumps({"transcript_path": tr_n, "session_id": "test-session-nosrc"}),
+               capture_output=True, text=True, env=hook_env)
+lt = open(lp, encoding="utf-8").read()
+o("hook: tokens in a session with no detectable source are removed", "[[cite:" not in lt and "no source found" in lt, lt)
+lp2 = os.path.join(vault_root, "sessions", "2026-10-14 plain.md")
+with open(lp2, "w", encoding="utf-8") as f:
+    f.write("---\nsession: test-session-plain\n---\nA plain note with a [[wikilink]].\n")
+subprocess.run(["bash", cite_check_sh], input=json.dumps({"transcript_path": tr_n, "session_id": "test-session-plain"}),
+               capture_output=True, text=True, env=hook_env)
+o("hook: a non-source note without tokens is left untouched", "[[wikilink]]" in open(lp2, encoding="utf-8").read())
+
+# The vault never holds a raw token, even mid-render: the check runs on the temp file before the move
+import threading  # noqa: E402
+seen, stop = [], threading.Event()
+
+
+def poll():
+    d = os.path.join(vault_root, "sessions")
+    while not stop.is_set():
+        for n in os.listdir(d):
+            if n.endswith(".md"):
+                try:
+                    if "[[cite:" in open(os.path.join(d, n), encoding="utf-8", errors="replace").read():
+                        seen.append(n)
+                except OSError:
+                    pass
+
+
+th = threading.Thread(target=poll)
+th.start()
+for _ in range(15):
+    subprocess.run(["bash", os.path.join(HOOKS_DIR, "md-log-stop-hook.sh")], input=md_input,
+                   capture_output=True, text=True, env=hook_env, timeout=120)
+stop.set()
+th.join()
+o("md-log: no raw [[cite: token is ever visible in the vault during renders", not seen, sorted(set(seen)))
