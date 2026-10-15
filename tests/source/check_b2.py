@@ -378,8 +378,17 @@ with open(os.path.join(FC_STORE, "briefs", "u001.md"), "w", encoding="utf-8") as
     f.write(sbrief.with_where(fc_reject_brief.split("\n", 3)[3], fc_where))
 r3 = subprocess.run([sys.executable, "-I", BRIEF_PY, "brief", "fcbook", "u001", "--strict"],
                     capture_output=True, text=True, env=dict(b_env, FAKE_FC="{}", FAKE_FC_DEFAULT="garbage"))
-o("b2 brief --strict: header shows fact-check status (unchecked when the judge fails)",
-  r3.returncode == 0 and "fact-check unchecked" in r3.stdout.split("\n")[0], f"rc={r3.returncode} {r3.stdout[:200]} {r3.stderr[-200:]}")
+o("b2 brief --strict: refuses when the judge fails (claims unchecked), serves nothing",
+  r3.returncode == 1 and not r3.stdout.strip() and "fact-check unavailable: 2 claims unchecked" in r3.stderr,
+  f"rc={r3.returncode} {r3.stdout[:200]} {r3.stderr[-200:]}")
+r4 = subprocess.run([sys.executable, "-I", BRIEF_PY, "brief", "fcbook", "u001"],
+                    capture_output=True, text=True, env=dict(b_env, FAKE_FC="{}", FAKE_FC_DEFAULT="garbage"))
+o("b2 brief after a refused --strict run: not shown as fact-checked (header says unchecked)",
+  r4.returncode == 0 and "fact-check unchecked" in r4.stdout.split("\n")[0], f"rc={r4.returncode} {r4.stdout[:200]} {r4.stderr[-200:]}")
+r5 = subprocess.run([sys.executable, "-I", BRIEF_PY, "brief", "fcbook", "u001", "--fact-check"],
+                    capture_output=True, text=True, env=dict(b_env, FAKE_FC="{}", FAKE_FC_DEFAULT="garbage"))
+o("b2 brief --fact-check (non-strict): judge failure serves the brief with 'unchecked' in the header",
+  r5.returncode == 0 and "fact-check unchecked" in r5.stdout.split("\n")[0], f"rc={r5.returncode} {r5.stdout[:200]} {r5.stderr[-200:]}")
 
 # 7b. Lazy vision path safety
 try:

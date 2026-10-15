@@ -428,16 +428,20 @@ def cmd_brief(slug, uid, model, factcheck_mode=None, fast_path=None):
     if corrupt:
         if os.path.exists(bpath):
             print(f"warning: cached brief {uid} is corrupted or invalid; regenerating", file=sys.stderr)
+        fpath = os.path.join(bdir, f"{uid}.factcheck.json")
+        if os.path.exists(fpath):
+            os.unlink(fpath)   # it judged the old brief
         make_brief(d, u, model, force=True, fast_path=fast_path)
 
-    fc_tag = ""
     if factcheck_mode:
         import factcheck
         strict = (factcheck_mode == "--strict")
         frep = factcheck.check_brief(d, bpath, strict=strict, model=model)
         if frep["status"] == "rejected":
             reject_brief(d, uid, frep)
-        fc_tag = f" · fact-check {frep['status']}" + (f" ({frep['unchecked']} unchecked)" if frep.get("unchecked") else "")
+        if strict:
+            refuse_unchecked(frep)
+    fc_tag = fact_check_tag(d, uid)
 
     meta = load(d, os.path.join("briefs", f"{uid}.json"))
     fp_tag = " · fast path" if meta.get("fast_path") else ""
@@ -457,6 +461,24 @@ def reject_brief(d, uid, frep):
             st.write_json(p, meta)
     sys.exit(f"brief {uid} failed the fact-check (rejected: {frep['unsupported']} unsupported claim(s) "
              f"would leave a required section empty); not served. Run `brief` again to make a new one.")
+
+
+def refuse_unchecked(frep):
+    """--strict means every claim was judged (Decision 12): a judge failure is not a pass."""
+    if frep.get("unchecked"):
+        sys.exit(f"fact-check unavailable: {frep['unchecked']} claims unchecked; retry or run without --strict")
+
+
+def fact_check_tag(d, uid):
+    """Header note from the brief's last fact-check report, if any."""
+    p = os.path.join(d, "briefs", f"{uid}.factcheck.json")
+    if not os.path.exists(p):
+        return ""
+    try:
+        frep = load(d, p)
+    except (OSError, ValueError):
+        return " · fact-check report unreadable"
+    return f" · fact-check {frep.get('status')}" + (f" ({frep['unchecked']} unchecked)" if frep.get("unchecked") else "")
 
 
 def cmd_fastpath(slug, uid):
@@ -569,6 +591,8 @@ def cmd_factcheck(slug, uid, strict, spot_check, model):
           f"{rep['unsupported']} unsupported, {rep['unchecked']} unchecked (escalated: {rep['escalated']})")
     if rep["status"] == "rejected":
         reject_brief(d, uid, rep)
+    if strict:
+        refuse_unchecked(rep)
 
 
 def cmd_units(slug):
