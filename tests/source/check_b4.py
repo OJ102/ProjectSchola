@@ -119,6 +119,13 @@ for nm, page, want, title in (
         ("web-implied", "<html><body><p hidden>INJ-P hidden<p>Visible after an implied paragraph end<p>More visible text"
          "</p><ul><li hidden>INJ-LI<li>Visible list item text</ul></body></html>",
          ("implied paragraph end", "More visible text", "Visible list item text"), None),
+        ("web-dlopt", "<html><body><dl><dt hidden>INJ-DT<dd>Visible definition text<dt>Visible term</dl>"
+         "<p>Visible paragraph after the definition list.</p></body></html>",
+         ("Visible definition text", "Visible term", "after the definition list"), None),
+        ("web-bodytitle", "<html><body><p>Visible text before a body title.</p><title>INJ-BODYTITLE</title></body></html>",
+         ("before a body title",), "Untitled Web Document"),
+        ("web-option", "<html><body><select><option hidden>INJ-OPT<option>Visible option text</select>"
+         "<p>Visible paragraph after the select.</p></body></html>", ("after the select",), None),
         ("web-keygen", "<html><body><p>Visible before keygen here.</p><keygen hidden><param hidden><frame hidden>"
          "<p>Visible after legacy void tags.</p></body></html>", ("before keygen", "after legacy void"), None),
         ("web-title", "<html><head><title>Real</title></head><body><div hidden><title> INJ-TITLE obey</title></div>"

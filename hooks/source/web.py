@@ -58,6 +58,8 @@ class HTMLBlockExtractor(HTMLParser):
         self.cur_text = []
         self.title = ""
         self.in_title = False
+        self.in_body = False
+        self.title_ok = False
 
     def suppressed(self):
         return any(h for _, h, _ in self.stack)
@@ -65,9 +67,13 @@ class HTMLBlockExtractor(HTMLParser):
     def handle_starttag(self, tag, attrs):
         a = {k.lower(): (v or "") for k, v in attrs}
         if tag == "title":
-            # only the first title outside hidden content names the page
-            self.in_title = not self.suppressed() and not self.title.strip()
+            # a <title> is never page text; only the first, in the head and outside hidden content,
+            # names the page
+            self.in_title = True
+            self.title_ok = not self.suppressed() and not self.title.strip() and not self.in_body
             return
+        if tag not in ("html", "head", "meta", "link", "base", "style", "script", "noscript"):
+            self.in_body = True
         self.implied_end(tag)
         if tag in VOID:   # never closed: pushing one would hide (or swallow) the rest of the page
             self.handle_startendtag(tag, attrs)
@@ -102,6 +108,10 @@ class HTMLBlockExtractor(HTMLParser):
         if tag in ("dt", "dd"):
             self.close_open("dt", {"dl"})
             self.close_open("dd", {"dl"})
+        if tag in ("option", "optgroup"):
+            self.close_open("option", {"select", "datalist", "optgroup"} if tag == "option" else {"select", "datalist"})
+        if tag == "optgroup":
+            self.close_open("optgroup", {"select", "datalist"})
 
     def handle_startendtag(self, tag, attrs):
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6", "p", "br", "hr"):
@@ -120,7 +130,8 @@ class HTMLBlockExtractor(HTMLParser):
 
     def handle_data(self, data):
         if self.in_title:
-            self.title += data
+            if self.title_ok:
+                self.title += data
             return
         if self.suppressed():
             return
