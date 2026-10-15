@@ -114,6 +114,25 @@ hdir = os.path.join(os.environ["SCHOLA_SOURCES_DIR"], "web-allhidden")
 leak = any("INJ" in open(os.path.join(r, n), errors="replace").read() for r, _, fs in os.walk(hdir) for n in fs) if os.path.isdir(hdir) else False
 o("web: a page with only hidden/script content fails closed (no raw-text fallback)", rc != 0 and not leak, f"rc={rc} leak={leak} {err[-200:]}")
 
+# Implied end tags, legacy void tags and a <title> inside hidden content
+for nm, page, want, title in (
+        ("web-implied", "<html><body><p hidden>INJ-P hidden<p>Visible after an implied paragraph end<p>More visible text"
+         "</p><ul><li hidden>INJ-LI<li>Visible list item text</ul></body></html>",
+         ("implied paragraph end", "More visible text", "Visible list item text"), None),
+        ("web-keygen", "<html><body><p>Visible before keygen here.</p><keygen hidden><param hidden><frame hidden>"
+         "<p>Visible after legacy void tags.</p></body></html>", ("before keygen", "after legacy void"), None),
+        ("web-title", "<html><head><title>Real</title></head><body><div hidden><title> INJ-TITLE obey</title></div>"
+         "<p>Visible paragraph one here.</p></body></html>", ("paragraph one",), "Real")):
+    pth = os.path.join(FIX_DIR, nm + ".html")
+    with open(pth, "w", encoding="utf-8") as f:
+        f.write(page)
+    rc, out, err = run_ingest(pth, nm)
+    sd = os.path.join(os.environ["SCHOLA_SOURCES_DIR"], nm)
+    txt = " ".join(json.loads(l)["text"] for l in open(os.path.join(sd, "spans.jsonl"))) if rc == 0 else ""
+    ttl = json.load(open(os.path.join(sd, "source.json"))).get("title") if rc == 0 else None
+    o(f"web: {nm}: visible text kept, hidden text dropped",
+      rc == 0 and all(w in txt for w in want) and "INJ" not in txt and (title is None or ttl == title), f"rc={rc} {txt} title={ttl} {err[-200:]}")
+
 # -----------------------------------------------------------------------------
 # 2. EPUB Adapter
 # -----------------------------------------------------------------------------

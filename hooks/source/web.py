@@ -38,8 +38,14 @@ def rec(sid, segment, locator, kind, text, **extra):
                 sha1=hashlib.sha1(n.encode()).hexdigest(), **extra)
 
 
-# Elements with no end tag (same set as pandoc_adapter.VOID).
-VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+# Elements with no end tag (pandoc_adapter.VOID plus the legacy ones browsers still treat as void).
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr",
+        "keygen", "param", "basefont", "frame", "image", "bgsound", "command", "menuitem", "isindex", "spacer"}
+# A start tag that implicitly ends an open <p> (HTML parsing rules), so a hidden <p> with no end tag
+# does not hide the rest of the page.
+CLOSES_P = {"address", "article", "aside", "blockquote", "details", "dialog", "div", "dl", "fieldset",
+            "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup",
+            "hr", "main", "menu", "nav", "ol", "p", "pre", "section", "table", "ul", "li", "dd", "dt"}
 
 
 class HTMLBlockExtractor(HTMLParser):
@@ -59,8 +65,10 @@ class HTMLBlockExtractor(HTMLParser):
     def handle_starttag(self, tag, attrs):
         a = {k.lower(): (v or "") for k, v in attrs}
         if tag == "title":
-            self.in_title = True
+            # only the first title outside hidden content names the page
+            self.in_title = not self.suppressed() and not self.title.strip()
             return
+        self.implied_end(tag)
         if tag in VOID:   # never closed: pushing one would hide (or swallow) the rest of the page
             self.handle_startendtag(tag, attrs)
             return
@@ -73,6 +81,27 @@ class HTMLBlockExtractor(HTMLParser):
             self.flush()
             self.cur_tag = tag
             self.cur_text = []
+
+    def close_open(self, tag, stop):
+        """Pop the nearest open `tag` (unless a `stop` element is nearer), as its end tag would."""
+        for k in range(len(self.stack) - 1, -1, -1):
+            t = self.stack[k][0]
+            if t in stop:
+                return
+            if t == tag:
+                if self.cur_tag:
+                    self.flush()
+                del self.stack[k:]
+                return
+
+    def implied_end(self, tag):
+        if tag in CLOSES_P:
+            self.close_open("p", {"button", "table", "td", "th", "caption", "template"})
+        if tag == "li":
+            self.close_open("li", {"ul", "ol", "menu"})
+        if tag in ("dt", "dd"):
+            self.close_open("dt", {"dl"})
+            self.close_open("dd", {"dl"})
 
     def handle_startendtag(self, tag, attrs):
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6", "p", "br", "hr"):
