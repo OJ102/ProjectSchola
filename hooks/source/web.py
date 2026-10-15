@@ -186,6 +186,10 @@ def extract_html_content(html_text, origin_url=""):
     rules = []
     for m in re.finditer(r"<style\b[^>]*>(.*?)</style>", html_text, re.I | re.S):
         rules += parse_css(m.group(1))
+    has_ext = bool(re.search(r"<link\b[^>]*rel=['\"]?stylesheet['\"]?", html_text, re.I) or
+                   re.search(r"<link\b[^>]*href=['\"][^'\"]+\.css['\"]?", html_text, re.I))
+    if has_ext:
+        rules.append(("__meta__", {"has_external_css": True}))
     parser = HTMLBlockExtractor(rules)
     parser.feed(html_text)
     parser.flush()

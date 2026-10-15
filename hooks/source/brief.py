@@ -240,19 +240,60 @@ COMMON_VERBS = {
 }
 
 
+NON_SUBJECT_WORDS = {
+    "it", "its", "they", "them", "their", "theirs", "this", "that", "these", "those",
+    "we", "us", "our", "ours", "he", "him", "his", "she", "her", "hers",
+    "you", "your", "yours", "i", "me", "my", "mine",
+    "the", "a", "an", "such", "there", "here", "which", "what", "where", "who", "whom",
+    "in", "on", "at", "by", "for", "with", "about", "into", "through", "to", "from",
+    "as", "when", "while", "since", "because", "although", "though", "even", "if",
+}
+
+PASSIVE_OR_COMMON_VERBS = COMMON_VERBS | {
+    "shown", "seen", "noted", "given", "known", "called", "named", "found", "assumed",
+    "considered", "used", "designed", "stated", "observed", "discussed", "introduced",
+}
+
+
+def _extract_concept(anchor, txt):
+    tokens_clean = [w.strip(".,;:?!()[]\"'") for w in anchor.split()]
+    substantive = []
+    started = False
+    for w in tokens_clean:
+        wl = w.lower()
+        if not started and (wl in NON_SUBJECT_WORDS or wl in PASSIVE_OR_COMMON_VERBS or len(w) <= 2):
+            continue
+        started = True
+        substantive.append(w)
+    if substantive:
+        return " ".join(substantive[:2])
+    sub = [w for w in tokens_clean if w.lower() not in NON_SUBJECT_WORDS and len(w) > 2]
+    return " ".join(sub[:2]) if sub else "the core concept"
+
+
 def generate_fast_path_brief(d, u):
     """Generate a valid brief adhering to Decision 17 schema directly from unit spans without LLM."""
     spans = []
-    on = False
-    with open(os.path.join(d, "spans.jsonl"), encoding="utf-8") as f:
-        for line in f:
-            s = json.loads(line)
-            if s["id"] == u["span_start"]:
-                on = True
-            if on:
-                spans.append(s)
-            if s["id"] == u["span_end"]:
-                break
+    spans_jsonl = os.path.join(d, "spans.jsonl")
+    if os.path.exists(spans_jsonl):
+        if "spans" in u and u["spans"]:
+            spans_set = set(u["spans"])
+            with open(spans_jsonl, encoding="utf-8") as f:
+                for line in f:
+                    s = json.loads(line)
+                    if s["id"] in spans_set:
+                        spans.append(s)
+        elif "span_start" in u:
+            on = False
+            with open(spans_jsonl, encoding="utf-8") as f:
+                for line in f:
+                    s = json.loads(line)
+                    if s["id"] == u["span_start"]:
+                        on = True
+                    if on:
+                        spans.append(s)
+                    if s["id"] == u["span_end"]:
+                        break
 
     where = where_of(d, u)
     candidates = []
@@ -282,17 +323,26 @@ def generate_fast_path_brief(d, u):
                         anchor = cand
                         break
         if anchor:
+            concept = _extract_concept(anchor, txt)
             sentences = [sent.strip() for sent in re.split(r"(?<=[.!?])\s+", txt) if sent.strip()]
             s0 = sentences[0] if sentences else txt
-            swords = s0.split()
-            if len(swords) > 25:
-                claim_body = " ".join(swords[:25]).rstrip(",;:")
+            s_clean = re.sub(
+                r"^(in this (?:section|chapter|unit|paper)|specifically|furthermore|moreover|in addition|for example|as shown|therefore|however|consequently),\s*",
+                "", s0, flags=re.I
+            ).strip()
+            swords = s_clean.split()
+            v_idx = None
+            for i in range(len(swords)):
+                if swords[i].lower() in COMMON_VERBS:
+                    v_idx = i
+                    break
+            if v_idx is not None:
+                action = " ".join(swords[v_idx:min(len(swords), v_idx + 10)]).strip(".,;:?!()[]\"'")
             else:
-                claim_body = s0.rstrip(",;:")
-            if not claim_body.endswith((".", "!", "?")):
-                claim_body += "."
+                action = " ".join(swords[:min(len(swords), 8)]).strip(".,;:?!()[]\"'")
+            claim_body = f"The source explains how {concept.lower()} {action}."
             if sv.SELF_LOCATOR.search(claim_body):
-                claim_body = f"The source explains that {anchor.lower()}."
+                claim_body = f"The source details the role and operation of {concept.lower()}."
             claims.append(f"- {claim_body} [[cite:{s['id']} \"{anchor}\"]]")
 
     if not claims:
@@ -315,6 +365,7 @@ def generate_fast_path_brief(d, u):
                         anchor = cand
                         break
         if anchor:
+            concept = _extract_concept(anchor, txt)
             sentences = [sent.strip() for sent in re.split(r"(?<=[.!?])\s+", txt) if sent.strip()]
             s0 = sentences[0] if sentences else txt
             s_clean = re.sub(
@@ -323,33 +374,23 @@ def generate_fast_path_brief(d, u):
             ).strip()
             swords = s_clean.split()
             v_idx = None
-            for i in range(1, min(7, len(swords))):
+            for i in range(len(swords)):
                 if swords[i].lower() in COMMON_VERBS:
                     v_idx = i
                     break
-            if v_idx:
-                subject = " ".join(swords[:v_idx]).strip(".,;:?!()[]\"'")
-                predicate = " ".join(swords[v_idx:min(len(swords), v_idx + 18)]).strip(".,;:?!()[]\"'")
+            if v_idx is not None:
+                pred_clause = " ".join(swords[v_idx:min(len(swords), v_idx + 8)]).strip(".,;:?!()[]\"'")
+                ans_body = f"It {pred_clause}."
             else:
-                split_idx = min(3, max(1, len(swords) // 2))
-                subject = " ".join(swords[:split_idx]).strip(".,;:?!()[]\"'")
-                predicate = " ".join(swords[split_idx:min(len(swords), split_idx + 18)]).strip(".,;:?!()[]\"'")
+                pred_clause = " ".join(swords[:min(len(swords), 6)]).strip(".,;:?!()[]\"'")
+                ans_body = f"It establishes that {pred_clause}."
 
-            if sv.SELF_LOCATOR.search(subject) or sv.SELF_LOCATOR.search(predicate):
-                subject = "the primary concept"
-                predicate = f"details {anchor.lower()}"
-
-            if not predicate.endswith((".", "!", "?")):
-                predicate += "."
-
-            pred_first = predicate.split()[0].lower() if predicate.split() else ""
-            if pred_first in COMMON_VERBS:
-                ans_body = f"It {predicate}"
-            else:
-                ans_body = f"It establishes that {predicate}"
+            if sv.SELF_LOCATOR.search(concept) or sv.SELF_LOCATOR.search(ans_body):
+                concept = "the core concept"
+                ans_body = f"It details {anchor.lower()}."
 
             q_num = len(quiz_seeds) + 1
-            quiz_seeds.append(f"{q_num}. What does the source establish regarding {subject.lower()}? — Answer: {ans_body} [[cite:{s['id']} \"{anchor}\"]]")
+            quiz_seeds.append(f"{q_num}. What does the source establish regarding {concept.lower()}? — Answer: {ans_body} [[cite:{s['id']} \"{anchor}\"]]")
 
     if not quiz_seeds:
         s = candidates[0]

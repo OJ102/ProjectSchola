@@ -436,11 +436,11 @@ except st.DeadlineExceeded as e:
     caught_deadline = True
 o("safety: check_deadline raises DeadlineExceeded when past", caught_deadline)
 
-# 7e. Issue 1 regression: dark-theme white text and CSS background
-o("safety: white text inside container with class is not hidden",
-  not shidden.is_hidden("span", {"style": "color: white"}, ancestors=[("div", {"class": "hero"})]))
-o("safety: white text inside container with id is not hidden",
-  not shidden.is_hidden("span", {"style": "color: white"}, ancestors=[("div", {"id": "dark-theme"})]))
+# 7e. Issue 1 regression: dark-theme white text, external CSS, and bypass prevention
+o("safety: white text inside container with class without external CSS is hidden",
+  shidden.is_hidden("span", {"style": "color: white"}, ancestors=[("div", {"class": "content"})], has_external_css=False))
+o("safety: white text inside container with class with external CSS is not hidden",
+  not shidden.is_hidden("span", {"style": "color: white"}, ancestors=[("div", {"class": "hero"})], has_external_css=True))
 css_dark = shidden.parse_css(".dark-theme { background-color: #222222; }")
 o("safety: white text with dark CSS rule background is not hidden",
   not shidden.is_hidden("span", {"style": "color: white"}, rules=css_dark, ancestors=[("div", {"class": "dark-theme"})]))

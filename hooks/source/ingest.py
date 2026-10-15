@@ -409,6 +409,26 @@ def ingest_locked(st, src, stype, size, opts):
         published = ""
         sha = s_meta.get("sha256", sha)
         adapter_name = "web"
+        if existing and existing.get("status") == "complete" and existing.get("sha256") == sha \
+                and existing.get("ingest_version") == INGEST_VERSION and existing.get("settings") == settings \
+                and not opts["rebuild"]:
+            shutil.rmtree(build, ignore_errors=True)
+            try:
+                with open(st.path("report.json"), "r", encoding="utf-8") as f:
+                    rep = json.load(f)
+            except (OSError, ValueError):
+                rep = None
+            vault_note = None
+            if opts["vault"]:
+                vp, vw = update_vault(st.slug, existing, {"units": rep.get("units", 0) if rep else 0}, st.root)
+                vault_note = os.path.join(vp, "sources", st.slug, "progress.md")
+                warnings += [f"the vault looks synced or version-controlled ({w})" for w in vw]
+            if opts["json"]:
+                print(json.dumps(dict(rep or {}, up_to_date=True, store=st.dir), indent=1, ensure_ascii=False))
+            else:
+                print("Up to date (same file, same settings); nothing re-ingested. Use --rebuild to force.")
+                print(summarize(existing, rep or {}, st.dir, vault_note, warnings))
+            return 0
     elif stype in ("epub", "markdown", "notebook", "docx"):
         rep = pandocadapter.build(src, build, opts, cache, log=lambda m: print(m, file=sys.stderr))
         with open(os.path.join(build, "source.json"), "r", encoding="utf-8") as f:

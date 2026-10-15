@@ -225,7 +225,7 @@ def css_hidden_selectors(css):
     return parse_css(css)
 
 
-def is_hidden(tag, attrs, rules=(), ancestors=()):
+def is_hidden(tag, attrs, rules=(), ancestors=(), has_external_css=False):
     """attrs: dict of lower-case attribute names -> values; ancestors: list of
     (tag, attrs) from the root down to the parent."""
     if "hidden" in attrs:
@@ -244,8 +244,11 @@ def is_hidden(tag, attrs, rules=(), ancestors=()):
         if inline:
             return True
         return False
+    has_ext = has_external_css or any(isinstance(r, (list, tuple)) and len(r) == 2 and r[0] == "__meta__" and r[1].get("has_external_css") for r in rules)
     result = False
     for r in rules:
+        if r[0] == "__meta__":
+            continue
         comp, eff = r[0], r[1]
         if eff is not None and _selector_matches(comp, tag, attrs, ancestors):
             result = eff  # later rules win
@@ -267,6 +270,8 @@ def is_hidden(tag, attrs, rules=(), ancestors=()):
                     break
             rule_fg = None
             for r in rules:
+                if r[0] == "__meta__":
+                    continue
                 comp = r[0]
                 fg_val = r[3] if len(r) > 3 else None
                 if fg_val and _selector_matches(comp, cur_tag, cur_attrs, cur_anc):
@@ -290,6 +295,8 @@ def is_hidden(tag, attrs, rules=(), ancestors=()):
                         break
                 rule_bg = None
                 for r in rules:
+                    if r[0] == "__meta__":
+                        continue
                     comp = r[0]
                     bg_val = r[2] if len(r) > 2 else None
                     if bg_val and _selector_matches(comp, cur_tag, cur_attrs, cur_anc):
@@ -299,10 +306,10 @@ def is_hidden(tag, attrs, rules=(), ancestors=()):
                     break
 
             if effective_bg is None:
-                # Only assume default white canvas if no element in the hierarchy has a class or id
-                # which could be styled by an external or unparsed stylesheet
+                # Better rule: assume a white page unless the page links an external stylesheet
+                # and has a class/id, or a matching class rule sets a background (which would have already set effective_bg).
                 has_class_or_id = bool(attrs.get("class") or attrs.get("id") or any(at.get("class") or at.get("id") for _, at in ancestors))
-                if not has_class_or_id:
+                if not (has_ext and has_class_or_id):
                     effective_bg = "#ffffff"
 
             if effective_bg and effective_fg == effective_bg:
