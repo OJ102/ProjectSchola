@@ -52,7 +52,7 @@ def quoted_runs(text, lo, hi, keep=lambda a, b: True):
     for m in QUOTED.finditer(text, lo, hi):
         if not keep(m.start(), m.end()):
             continue
-        q = re.sub(r"\s+", " ", next(g for g in m.groups() if g is not None)).strip(" *_`~")
+        q = next(g for g in m.groups() if g is not None).strip(" *_`~")
         if len(q.strip()) >= 3:
             out.append(q)
     return out
