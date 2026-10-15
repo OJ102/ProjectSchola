@@ -110,4 +110,10 @@ if [ -n "$EXISTING" ] && [ "$EXISTING" != "$LOG_FILE" ]; then
   rm -f "$EXISTING"
 fi
 
+# Source mode: check the tutor's citations in the note just written, still under the lock, so no
+# render can land after the check. Exits at once for other sessions (hooks/source/cite_check.py).
+CITE_CHECK="$(cd "$(dirname "$0")" && pwd)/source/cite_check.py"
+[ -f "$CITE_CHECK" ] && [ -f "$LOG_FILE" ] && \
+  MD_LOG_LOCK_HELD="$LOCK_ME" MD_LOG_FILE="$LOG_FILE" python3 -I "$CITE_CHECK" --hook <<<"$INPUT"
+
 exit 0

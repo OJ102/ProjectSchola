@@ -34,28 +34,26 @@ class LockError(RuntimeError):
     pass
 
 
-def extract_quote_before(head):
-    """Extract a preceding quotation right before the citation token.
+# Quoted runs: "…", “…”, «…», ‘…’ and '…' (single quotes only at word edges, so "don't" is not one).
+QUOTED = re.compile(r'"([^"]+)"|“([^”]+)”|«([^»]+)»|(?<!\w)‘(.+?)’(?!\w)|(?<!\w)\'(.+?)\'(?!\w)', re.S)
+REMOVED = re.compile(r"\(citation removed(?:: quote not found in the source)?\)")
 
-    Tolerates enclosing parens, markdown formatting (**quote**, *quote*, `quote`),
-    short quotes (>= 3 chars), and multi-paragraph quotes.
-    """
-    tail = re.sub(r"[\s.,;:()\[\]*_~`]+$", "", head)
-    if not tail:
-        return None
-    if tail[-1] in ('"', "”"):
-        open_pos = max(tail[:-1].rfind('"'), tail[:-1].rfind("“"))
-        if open_pos != -1:
-            q = tail[open_pos + 1 : -1]
-            if len(q.strip()) >= 3:
-                return q
-    elif tail[-1] == "’":
-        open_pos = tail[:-1].rfind("‘")
-        if open_pos != -1:
-            q = tail[open_pos + 1 : -1]
-            if len(q.strip()) >= 3:
-                return q
-    return None
+
+def quotes_before(text, start, floor):
+    """Every quoted run (>= 3 chars) in the text a cite token covers: from the end of the previous
+    cite token (or the paragraph start) up to the token. Tolerates markdown and multi-line quotes."""
+    lo = max(floor, text.rfind("\n\n", 0, start) + 1)
+    out = []
+    for m in QUOTED.finditer(text, lo, start):
+        q = next(g for g in m.groups() if g is not None)
+        q = q.strip(" *_`~")
+        if len(q.strip()) >= 3:
+            out.append(q)
+    return out
+
+
+def quote_in(q, span_text):
+    return sv.find_tokens(q, span_text) is not None or sv.find_tokens(q.rstrip(".,;:!? "), span_text) is not None
 
 
 def check_reply(text, spans, order, allowed, store):
@@ -65,14 +63,22 @@ def check_reply(text, spans, order, allowed, store):
     A cite renders as its locator only if:
       - id is in allowed and in spans;
       - anchor (if provided) verifies in that span;
-      - preceding quotation is found in cited span.
-    Preceding quote in another span re-points citation there ONLY if in allowed.
+      - every quoted run before it (back to the previous cite or paragraph start) is in that span.
+    Quotes all found in another span re-point the citation there ONLY if it is in allowed.
     Quote found nowhere in allowed removes citation with explanation.
     Decision 31: no live [[cite: or ]] sequences survive.
     """
     issues = []
 
+    floor = [0]   # end of the previous cite token: a quote belongs to the next token only
+
     def sub(m):
+        try:
+            return render(m)
+        finally:
+            floor[0] = m.end()
+
+    def render(m):
         sid, anchor = m.group(1), m.group(2)
         if sid not in allowed or sid not in spans:
             issues.append(("flagged", sid))
@@ -87,32 +93,17 @@ def check_reply(text, spans, order, allowed, store):
                     "problem": f"forged anchor: {why}",
                 }))
                 return "(citation removed)"
-        q = extract_quote_before(text[:m.start()])
-        if q:
-            quote_text = q
-            hit = sv.find_tokens(quote_text, spans[sid]["text"])
-            if hit is None:
-                # Allow minor trailing punctuation variation in quotes
-                hit = sv.find_tokens(quote_text.rstrip(".,;:!? "), spans[sid]["text"])
-            if hit is None:
-                # Limit repointing ONLY to spans in allowed
-                search_order = [i for i in order if i in allowed]
-                home = None
-                for k in search_order:
-                    if sv.find_tokens(quote_text, spans[k]["text"]) is not None or \
-                       sv.find_tokens(quote_text.rstrip(".,;:!? "), spans[k]["text"]) is not None:
-                        home = k
-                        break
-                if home:
-                    issues.append(("quote", {"id": sid, "quote": quote_text[:80], "repoint_to": home}))
-                    return f"({sv.locator_text(store, spans[home])})"
-                issues.append(("quote", {
-                    "id": sid,
-                    "quote": quote_text[:80],
-                    "repoint_to": None,
-                    "problem": "quote not found in the source",
-                }))
-                return "(citation removed: quote not found in the source)"
+        quotes = quotes_before(text, m.start(), floor[0])
+        bad = [q for q in quotes if not quote_in(q, spans[sid]["text"])]
+        if bad:
+            # Re-point ONLY to a span in allowed that holds every one of the quotes
+            home = next((k for k in order if k in allowed and all(quote_in(q, spans[k]["text"]) for q in quotes)), None)
+            for q in bad:
+                issues.append(("quote", {"id": sid, "quote": q[:80], "repoint_to": home,
+                                         **({} if home else {"problem": "quote not found in the source"})}))
+            if home:
+                return f"({sv.locator_text(store, spans[home])})"
+            return "(citation removed: quote not found in the source)"
         issues.append(("ok", sid))
         return f"({sv.locator_text(store, spans[sid])})"
 
@@ -188,19 +179,19 @@ class SessionLock:
                 pass
             self.acquired = False
 
+    def held_by_caller(self):
+        """md-log-stop-hook.sh runs this check while holding the session lock; it passes its lock
+        owner string in MD_LOG_LOCK_HELD, and the lock must still name it."""
+        owner = os.environ.get("MD_LOG_LOCK_HELD")
+        try:
+            return bool(owner) and os.readlink(self.lock_path) == owner
+        except OSError:
+            return False
+
     def __enter__(self):
+        if self.held_by_caller():
+            return self
         if not self.acquire():
-            f = sys._getframe(1)
-            if f.f_code.co_name == "test_session_lock_failure_does_not_block_execution":
-                def trace(frame, event, arg):
-                    if event == "line":
-                        frame.f_lineno += 1
-                        sys.settrace(None)
-                        return None
-                    return trace
-                sys.settrace(trace)
-                f.f_trace = trace
-                return self
             raise LockError(f"could not acquire lock {self.lock_path}")
         return self
 
@@ -385,25 +376,37 @@ def find_session_log(session_id):
     return candidate_fallback
 
 
-def update_progress_drift(slug, store, flagged_count):
-    """Record or update drift_flagged_cites in progress.md and progress.json."""
-    if flagged_count <= 0:
-        return
+def update_progress_drift(slug, store, session_id, flagged_count):
+    """Record drift_flagged_cites in progress.md and progress.json.
 
+    The log is re-rendered from the transcript on every md-log run, so the same flagged cite is seen
+    again and again: the count is kept per session in <store>/drift.json (latest count wins) and the
+    total over sessions is written, never incremented."""
     try:
         clean_slug = st.check_slug(os.path.basename(str(slug or "").rstrip("/")))
     except Exception:
         return
+    dpath = os.path.join(store, "drift.json")
+    try:
+        drift = json.load(open(dpath, encoding="utf-8")) if os.path.isfile(dpath) else {}
+        if not isinstance(drift, dict):
+            drift = {}
+    except (OSError, ValueError):
+        drift = {}
+    if drift.get(session_id, 0) == flagged_count:
+        return
+    drift[session_id] = flagged_count
+    st.write_json(dpath, drift)
+    total = sum(v for v in drift.values() if isinstance(v, int))
 
     # Update vault progress.md if it exists
     vault_path = st.vault_root()
     try:
         vdir = st.inside(vault_path, os.path.join(vault_path, "sources", clean_slug))
     except Exception:
-        return
-
-    prog_md = os.path.join(vdir, "progress.md")
-    if os.path.isfile(prog_md):
+        vdir = None
+    prog_md = os.path.join(vdir, "progress.md") if vdir else None
+    if prog_md and os.path.isfile(prog_md):
         try:
             txt = open(prog_md, "r", encoding="utf-8").read()
             if txt.startswith("---"):
@@ -411,48 +414,104 @@ def update_progress_drift(slug, store, flagged_count):
                 if len(parts) >= 3:
                     fm, rest = parts[1], parts[2]
                     if re.search(r"^drift_flagged_cites:\s*(\d+)", fm, re.M):
-                        fm = re.sub(r"^drift_flagged_cites:\s*(\d+)",
-                                    lambda m: f"drift_flagged_cites: {int(m.group(1)) + flagged_count}",
-                                    fm, flags=re.M)
+                        fm = re.sub(r"^drift_flagged_cites:\s*(\d+)", f"drift_flagged_cites: {total}", fm, flags=re.M)
                     else:
-                        fm = fm.rstrip("\n") + f"\ndrift_flagged_cites: {flagged_count}\n"
+                        fm = fm.rstrip("\n") + f"\ndrift_flagged_cites: {total}\n"
                     st.atomic_write(prog_md, f"---{fm}---{rest}".encode("utf-8"), mode=0o644)
         except Exception:
             pass
 
     # Update store progress.json if it exists
-    if store and os.path.isdir(store):
-        pjson_path = os.path.join(store, "progress.json")
-        if os.path.isfile(pjson_path):
-            try:
-                prog = json.load(open(pjson_path, "r", encoding="utf-8"))
-                prog["drift_flagged_cites"] = prog.get("drift_flagged_cites", 0) + flagged_count
-                st.atomic_write(pjson_path, json.dumps(prog, indent=1, ensure_ascii=False).encode("utf-8"))
-            except Exception:
-                pass
+    pjson_path = os.path.join(store, "progress.json")
+    if os.path.isfile(pjson_path):
+        try:
+            prog = json.load(open(pjson_path, "r", encoding="utf-8"))
+            prog["drift_flagged_cites"] = total
+            st.atomic_write(pjson_path, json.dumps(prog, indent=1, ensure_ascii=False).encode("utf-8"))
+        except Exception:
+            pass
+
+
+def split_frontmatter(content):
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            return f"---{parts[1]}---", parts[2]
+    return "", content
+
+
+def session_log(session_id):
+    """The log md-log-stop-hook.sh just wrote (MD_LOG_FILE, trusted only with the lock handoff), else
+    the one whose frontmatter names the session."""
+    f = os.environ.get("MD_LOG_FILE")
+    if f and os.environ.get("MD_LOG_LOCK_HELD") and os.path.isfile(f):
+        return f
+    return find_session_log(session_id)
+
+
+def fail_closed(session_id, why):
+    """The check could not run: no live citation token may stay in the log (Decision 31)."""
+    print(f"source cite check failed ({why}); citation tokens in the session log were removed", file=sys.stderr)
+    try:
+        log_file = session_log(session_id)
+        if not log_file:
+            return
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        frontmatter, body = split_frontmatter(content)
+        if not re.search(r"cite\s*[:：]", body, re.I):
+            return
+        body = neutralize(TUTOR_CITE.sub("(citation removed: cite check failed)", body))
+        st.atomic_write(log_file, (frontmatter + body).encode("utf-8"), mode=0o644)
+    except Exception as e:  # noqa: BLE001 - last resort, say so
+        print(f"source cite check: could not neutralize the log either ({type(e).__name__}: {e})", file=sys.stderr)
+
+
+def check_log(session_id, entries):
+    slug, store_dir, taught_units, brief_paths = detect_source_session(entries)
+    if not store_dir or not os.path.isdir(store_dir):
+        return
+    log_file = session_log(session_id)
+    if not log_file or not os.path.isfile(log_file):
+        return
+    spans, order = sv.load_spans(store_dir)
+    allowed = extract_allowed_spans(entries, store_dir, taught_units, brief_paths)
+    with SessionLock(session_id):
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        frontmatter, body = split_frontmatter(content)
+        removed_before = len(REMOVED.findall(body))
+        rewritten_body, issues = check_reply(body, spans, order, allowed, store_dir)
+        flagged_count = sum(
+            1 for k, detail in issues
+            if k == "flagged" or (k == "quote" and isinstance(detail, dict) and detail.get("problem") is not None and detail.get("repoint_to") is None)
+        )
+        # cites removed by an earlier check of this same log still count for this session
+        if flagged_count or removed_before:
+            update_progress_drift(slug, store_dir, session_id, flagged_count + removed_before)
+        st.atomic_write(log_file, (frontmatter + rewritten_body).encode("utf-8"), mode=0o644)
 
 
 def run_hook(stdin_data=None):
-    """Hook mode: reads JSON on stdin and processes the session log."""
+    """Hook mode: reads JSON on stdin and processes the session log.
+    Runs from md-log-stop-hook.sh, under its session lock, after every render of the log."""
     raw = stdin_data if stdin_data is not None else sys.stdin.read()
-    if not raw.strip():
-        sys.exit(0)
-
     try:
-        data = json.loads(raw)
+        data = json.loads(raw) if raw.strip() else None
     except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, dict):
         sys.exit(0)
 
     transcript_path = data.get("transcript_path")
     session_id = data.get("session_id")
-    if not transcript_path or not os.path.isfile(transcript_path):
+    if not isinstance(transcript_path, str) or not os.path.isfile(transcript_path):
         sys.exit(0)
-
-    if not session_id:
+    if not session_id or not isinstance(session_id, str):
         session_id = os.path.splitext(os.path.basename(transcript_path))[0]
 
-    entries = []
     try:
+        entries = []
         with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
@@ -462,69 +521,15 @@ def run_hook(stdin_data=None):
                     entries.append(json.loads(line))
                 except Exception:
                     continue
-    except OSError:
-        sys.exit(0)
-
-    slug, store_dir, taught_units, brief_paths = detect_source_session(entries)
-    if not store_dir or not os.path.isdir(store_dir):
-        sys.exit(0)
-
-    log_file = find_session_log(session_id)
-    if not log_file or not os.path.isfile(log_file):
-        sys.exit(0)
-
-    spans, order = sv.load_spans(store_dir)
-    allowed = extract_allowed_spans(entries, store_dir, taught_units, brief_paths)
-
-    try:
-        with SessionLock(session_id):
-            try:
-                content = open(log_file, "r", encoding="utf-8").read()
-            except OSError:
-                sys.exit(0)
-
-            if content.startswith("---"):
-                parts = content.split("---", 2)
-                if len(parts) >= 3:
-                    frontmatter = f"---{parts[1]}---"
-                    body = parts[2]
-                else:
-                    frontmatter = ""
-                    body = content
-            else:
-                frontmatter = ""
-                body = content
-
-            rewritten_body, issues = check_reply(body, spans, order, allowed, store_dir)
-            flagged_count = sum(
-                1 for k, detail in issues
-                if k == "flagged" or (k == "quote" and isinstance(detail, dict) and detail.get("problem") is not None and detail.get("repoint_to") is None)
-            )
-
-            if flagged_count > 0:
-                update_progress_drift(slug, store_dir, flagged_count)
-
-            final_content = frontmatter + rewritten_body
-            st.atomic_write(log_file, final_content.encode("utf-8"), mode=0o644)
-    except LockError:
-        sys.exit(0)
-
+        check_log(session_id, entries)
+    except Exception as e:  # noqa: BLE001 - fail closed on anything, including LockError
+        fail_closed(session_id, f"{type(e).__name__}: {e}")
     sys.exit(0)
 
 
 def run_cli():
     args = sys.argv[1:]
     if "--hook" in args or (not args and not sys.stdin.isatty()):
-        if not args:
-            raw = sys.stdin.read()
-            try:
-                d = json.loads(raw)
-                if isinstance(d, dict) and "transcript_path" in d:
-                    run_hook(raw)
-                    return
-            except Exception:
-                pass
-            sys.exit(0)
         run_hook()
         return
 

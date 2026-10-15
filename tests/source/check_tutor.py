@@ -346,3 +346,93 @@ r_nolog = subprocess.run(
     env=hook_env,
 )
 o("hook: clean exit 0 when session log is absent", r_nolog.returncode == 0, f"rc={r_nolog.returncode}")
+
+# -----------------------------------------------------------------------------
+# 5. Every quoted run before a cite is checked (not only one right before the token)
+# -----------------------------------------------------------------------------
+QUOTE_CASES = {
+    "word_between": ('It says "the moon alone causes every tide" in the book [[cite:p0010.1]].', False),
+    "two_quotes_one_fake": ('It says "the moon alone causes every tide" and "driven by the gravitational pull" [[cite:p0010.1]].', False),
+    "single_quoted_fake": ("It says 'the moon alone causes every tide' [[cite:p0010.1]].", False),
+    "single_curly_fake": ("It says ‘the moon alone causes every tide’ [[cite:p0010.1]].", False),
+    "guillemets_fake": ("It says «the moon alone causes every tide» [[cite:p0010.1]].", False),
+    "two_quotes_real": ('Both "driven by the gravitational pull" and "to a lesser degree" appear [[cite:p0010.1]].', True),
+    "single_quoted_real": ("It's 'driven by the gravitational pull of the moon', don't forget [[cite:p0010.1]].", True),
+    "quote_owned_by_earlier_cite": ('First "when the sun and moon align" [[cite:p0010.2]] then tides [[cite:p0010.1]].', True),
+}
+for name, (txt, good) in QUOTE_CASES.items():
+    r_q = subprocess.run(["bash", cite_check_sh, STORE_DIR, brief_path, "--text", txt], capture_output=True, text=True)
+    out_q = r_q.stdout
+    if good:
+        o(f"tutor quotes: {name} keeps its locator", "(p. 10)" in out_q and "removed" not in out_q, out_q.strip())
+    else:
+        o(f"tutor quotes: {name} is not given a locator", "(p. 10)" not in out_q and "quote not found" in out_q, out_q.strip())
+
+# -----------------------------------------------------------------------------
+# 6. Stop hook fails closed: non-UTF-8 log, and any error inside the check
+# -----------------------------------------------------------------------------
+with open(session_log_path, "wb") as f:
+    f.write(f"---\nsession: {session_id}\ntopic: Ocean Tides\n---\n\n**Tutor:** caf\xe9 latin1 byte, moon [[cite:p0010.1]] and [[cite:p9999.9]].\n".encode("latin-1"))
+r_b = subprocess.run(["bash", cite_check_sh], input=hook_input, capture_output=True, text=True, env=hook_env)
+log_b = open(session_log_path, encoding="utf-8", errors="replace").read()
+o("hook: non-UTF-8 byte in the log is checked, not skipped",
+  "[[cite:" not in log_b and "(p. 10)" in log_b and "(citation removed)" in log_b, f"rc={r_b.returncode} {log_b[-200:]} {r_b.stderr[-200:]}")
+
+spans_path = os.path.join(tides_store, "spans.jsonl")
+good_spans = open(spans_path, encoding="utf-8").read()
+with open(spans_path, "a", encoding="utf-8") as f:
+    f.write("{not json\n")
+with open(session_log_path, "w", encoding="utf-8") as f:
+    f.write(initial_session_body)
+r_c = subprocess.run(["bash", cite_check_sh], input=hook_input, capture_output=True, text=True, env=hook_env)
+log_c = open(session_log_path, encoding="utf-8").read()
+o("hook: an error inside the check still strips [[cite: tokens (fail closed) and says why",
+  r_c.returncode == 0 and "[[cite:" not in log_c and "cite check failed" in log_c and "cite check failed" in r_c.stderr,
+  f"rc={r_c.returncode} log={log_c[-200:]} err={r_c.stderr[-200:]}")
+with open(spans_path, "w", encoding="utf-8") as f:
+    f.write(good_spans)
+
+# Lock held by another live process (not handed over): fail closed, never leave tokens
+lock_path = os.path.join(state_root, f"{session_id}.lock")
+ps = subprocess.run(["ps", "-o", "lstart=", "-p", str(os.getppid())], capture_output=True, text=True).stdout.strip()
+os.symlink(f"{os.getppid()} {ps}", lock_path)
+with open(session_log_path, "w", encoding="utf-8") as f:
+    f.write(initial_session_body)
+r_l = subprocess.run(["bash", cite_check_sh], input=hook_input, capture_output=True, text=True,
+                     env=dict(hook_env, MD_LOG_LOCK_HELD="1 not-the-owner"), timeout=60)
+log_l = open(session_log_path, encoding="utf-8").read()
+o("hook: lock not obtainable -> tokens still stripped", "[[cite:" not in log_l and "LockError" in r_l.stderr,
+  f"{log_l[-200:]} {r_l.stderr[-200:]}")
+os.unlink(lock_path)
+
+# -----------------------------------------------------------------------------
+# 7. Ordering: the cite check runs inside md-log-stop-hook.sh, after its render, under its lock
+# -----------------------------------------------------------------------------
+hooks_json = json.load(open(os.path.join(HOOKS_DIR, "hooks.json"), encoding="utf-8"))
+parallel = [ev for ev, groups in hooks_json["hooks"].items() for g in groups for h in g.get("hooks", [])
+            if "source-cite-check" in " ".join(h.get("args", []) + [h.get("command", "")])]
+o("hooks.json: no cite-check hook running in parallel with md-log-stop-hook.sh", not parallel, parallel)
+
+md_tr = os.path.join(hook_work, "md_transcript.jsonl")
+md_sid = "test-session-md-0002"
+with open(md_tr, "w", encoding="utf-8") as f:
+    f.write(json.dumps({"type": "user", "timestamp": "2026-10-14T10:00:00Z", "message": {"role": "user",
+            "content": f"<command-name>/teach</command-name>\n<command-args>tides Unit brief: {tides_brief}</command-args>"}}) + "\n")
+    f.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text",
+            "text": "Tides follow the moon [[cite:p0010.1]]. It says \"the moon alone causes every tide\" [[cite:p0010.1]]. Invented [[cite:p9999.9]]."}]}}) + "\n")
+md_input = json.dumps({"transcript_path": md_tr, "session_id": md_sid})
+r_md = subprocess.run(["bash", os.path.join(HOOKS_DIR, "md-log-stop-hook.sh")], input=md_input,
+                      capture_output=True, text=True, env=hook_env, timeout=120)
+md_logs = [os.path.join(vault_root, "sessions", n) for n in os.listdir(os.path.join(vault_root, "sessions"))
+           if md_sid in open(os.path.join(vault_root, "sessions", n), encoding="utf-8", errors="replace").read()]
+md_text = open(md_logs[0], encoding="utf-8").read() if md_logs else ""
+o("md-log render + cite check: no raw [[cite: in the note, locators and removals applied",
+  bool(md_text) and "[[cite:" not in md_text and "(p. 10)" in md_text and "quote not found" in md_text
+  and "(citation removed)" in md_text, f"rc={r_md.returncode} {md_text[-300:]} {r_md.stderr[-200:]}")
+o("md-log: lock released after the cite check", not os.path.lexists(os.path.join(state_root, f"{md_sid}.lock")))
+r_md2 = subprocess.run(["bash", os.path.join(HOOKS_DIR, "md-log-stop-hook.sh")], input=md_input,
+                       capture_output=True, text=True, env=hook_env, timeout=120)
+md_prog = json.load(open(store_progress_path, encoding="utf-8"))
+drift = json.load(open(os.path.join(tides_store, "drift.json"), encoding="utf-8"))
+o("md-log re-render: drift for a session is not counted twice", drift.get(md_sid) == 2, drift)
+o("md-log: progress.json total is the sum over sessions", md_prog.get("drift_flagged_cites") == sum(drift.values()), (md_prog, drift))
