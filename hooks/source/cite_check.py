@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -34,35 +35,42 @@ class LockError(RuntimeError):
     pass
 
 
-# Quoted runs. Any double-style mark opens or closes (straight, curly, low-9 „, fullwidth ＂, prime ″,
-# guillemets «» ‹›, CJK 「」『』〝〞), so mixed pairs like “…" count too; single quotes (' ‘ ’ ‚ ′)
+# Quoted runs. Any double-style mark opens or closes (every Unicode Pi/Pf quote, straight, low-9 „,
+# fullwidth ＂, prime ″, CJK 「」『』〝〞), so mixed pairs like “…" count too; single quotes (' ‘ ’ ‚ ′)
 # only at word edges, so "don't" is not one. An unbalanced mark pairs with the next one: the odd run
 # is then checked too (fails closed).
-DQ = "\"“”„‟＂″〃«»‹›「」『』〝〞〟"
 SQ = "'‘’‚‛′"
-QUOTED = re.compile(rf"[{DQ}]([^{DQ}]+)[{DQ}]|(?<!\w)[{SQ}](.+?)[{SQ}](?!\w)", re.S)
+DQ = "".join(sorted((set("\"“”„‟＂″〃«»‹›「」『』〝〞〟﹁﹂﹃﹄｢｣")
+                     | {chr(c) for c in range(0x10000) if unicodedata.category(chr(c)) in ("Pi", "Pf")}) - set(SQ)))
+_D, _S = re.escape(DQ), re.escape(SQ)
+QUOTED = re.compile(rf"[{_D}]([^{_D}]+)[{_D}]|(?<!\w)[{_S}](.+?)[{_S}](?!\w)", re.S)
 REMOVED = re.compile(r"\(citation removed(?:: quote not found in the source)?\)")
 
 
-def quoted_runs(text, lo, hi):
+def quoted_runs(text, lo, hi, keep=lambda a, b: True):
     out = []
     for m in QUOTED.finditer(text, lo, hi):
-        q = next(g for g in m.groups() if g is not None).strip(" *_`~")
+        if not keep(m.start(), m.end()):
+            continue
+        q = re.sub(r"\s+", " ", next(g for g in m.groups() if g is not None)).strip(" *_`~")
         if len(q.strip()) >= 3:
             out.append(q)
     return out
 
 
-def quotes_near(text, m, floor):
-    """Every quoted run a cite token covers: before it, from the end of the last cite that rendered
-    (or the paragraph start); after it, to the end of the line when no other cite follows on that
-    line (a quote between two cites belongs to the next one)."""
+def quotes_near(text, masked, m, floor):
+    """Every quoted run a cite token covers, found in `masked` (the text with every cite token
+    blanked, so a quote around the token, "… [[cite:x]]", still pairs up): runs that start before
+    the token, from the end of the last cite that rendered (or the paragraph start); and runs after
+    it, to the end of the line, when no other cite follows on that line (a quote between two cites
+    belongs to the next one)."""
     start, end = m.start(), m.end()
     lo = max(floor, text.rfind("\n\n", 0, start) + 1)
     pend = text.find("\n", end)
     pend = len(text) if pend == -1 else pend
     nxt = TUTOR_CITE.search(text, end, pend)
-    return quoted_runs(text, lo, start) + ([] if nxt else quoted_runs(text, end, pend))
+    hi = nxt.start() if nxt else pend
+    return quoted_runs(masked, lo, hi, keep=lambda a, b: a < start or not nxt)
 
 
 def quote_in(q, span_text):
@@ -86,6 +94,7 @@ def check_reply(text, spans, order, allowed, store):
     # floor: where the quotes a cite covers start, normally the end of the previous cite. A removed
     # cite's quotes carry over to a cite right next to it ("q" [[cite:bad]][[cite:good]]).
     floor, prev = [0], [None]   # prev: (end, removed, floor it used)
+    masked = TUTOR_CITE.sub(lambda c: " " * len(c.group(0)), text)
 
     def sub(m):
         if prev[0]:
@@ -111,7 +120,7 @@ def check_reply(text, spans, order, allowed, store):
                     "problem": f"forged anchor: {why}",
                 }))
                 return "(citation removed)"
-        quotes = quotes_near(text, m, floor[0])
+        quotes = quotes_near(text, masked, m, floor[0])
         bad = [q for q in quotes if not quote_in(q, spans[sid]["text"])]
         if bad:
             # Re-point ONLY to a span in allowed that holds every one of the quotes
