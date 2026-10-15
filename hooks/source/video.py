@@ -9,6 +9,8 @@ import html
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import urllib.parse
 
@@ -97,16 +99,94 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
     os.makedirs(build_dir, exist_ok=True)
     st.check_deadline(opts.get("deadline"), "video processing")
     video_url = opts.get("url")
+    yt_chapters = []
 
-    if os.path.exists(source_path_or_url):
-        with open(source_path_or_url, "rb") as f:
+    if source_path_or_url.startswith(("http://", "https://")):
+        video_url = source_path_or_url
+        origin = source_path_or_url
+        sha = hashlib.sha256(source_path_or_url.encode()).hexdigest()
+        if not shutil.which("yt-dlp"):
+            raise VideoParseError("yt-dlp is required to process video URLs (install with: brew install yt-dlp)")
+
+        # 1. Fetch metadata
+        cmd_meta = ["yt-dlp", "--dump-json", "--skip-download", source_path_or_url]
+        r_meta = subprocess.run(cmd_meta, capture_output=True, text=True, timeout=60)
+        yt_meta = json.loads(r_meta.stdout) if r_meta.returncode == 0 else {}
+        title = st.clean_meta(yt_meta.get("title") or "Video", 120)
+        yt_chapters = yt_meta.get("chapters") or []
+
+        # 2. Download subtitles
+        sub_out = os.path.join(build_dir, "subs")
+        cmd_subs = ["yt-dlp", "--write-subs", "--write-auto-subs", "--sub-format", "vtt",
+                    "--skip-download", "-o", sub_out, source_path_or_url]
+        subprocess.run(cmd_subs, capture_output=True, timeout=120)
+        vtt_file = None
+        for fn in sorted(os.listdir(build_dir)):
+            if fn.startswith("subs") and fn.endswith(".vtt"):
+                vtt_file = os.path.join(build_dir, fn)
+                break
+        if not vtt_file or not os.path.exists(vtt_file):
+            raise VideoParseError("no subtitle or caption track found for video URL")
+        with open(vtt_file, "rb") as f:
             raw_bytes = f.read()
         txt = raw_bytes.decode("utf-8-sig", "replace")
+
+    elif os.path.exists(source_path_or_url):
+        ext = os.path.splitext(source_path_or_url)[1].lower()
         origin = os.path.abspath(source_path_or_url)
-        sha = hashlib.sha256(raw_bytes).hexdigest()
         title = st.clean_meta(os.path.splitext(os.path.basename(source_path_or_url))[0], 120)
+
+        if ext in (".vtt", ".srt"):
+            with open(source_path_or_url, "rb") as f:
+                raw_bytes = f.read()
+            txt = raw_bytes.decode("utf-8-sig", "replace")
+            sha = hashlib.sha256(raw_bytes).hexdigest()
+        elif ext in (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4a"):
+            if not shutil.which("ffmpeg"):
+                raise VideoParseError("ffmpeg is required to process video media files (install with: brew install ffmpeg)")
+            with open(source_path_or_url, "rb") as f:
+                sha = hashlib.sha256(f.read(10 * 1024 * 1024)).hexdigest()
+
+            # Try extracting embedded subtitle track
+            vtt_out = os.path.join(build_dir, "embedded.vtt")
+            cmd_sub = ["ffmpeg", "-y", "-i", source_path_or_url, "-map", "0:s:0", vtt_out]
+            r_sub = subprocess.run(cmd_sub, capture_output=True, timeout=30)
+            if r_sub.returncode == 0 and os.path.exists(vtt_out) and os.path.getsize(vtt_out) > 20:
+                with open(vtt_out, "rb") as f:
+                    txt = f.read().decode("utf-8-sig", "replace")
+            else:
+                # Audio extraction + whisper transcription
+                audio_wav = os.path.join(build_dir, "audio.wav")
+                cmd_aud = ["ffmpeg", "-y", "-i", source_path_or_url, "-vn", "-ar", "16000", "-ac", "1", audio_wav]
+                subprocess.run(cmd_aud, capture_output=True, timeout=120)
+
+                whisper_bin = shutil.which("whisper") or shutil.which("whisper-cpp")
+                if whisper_bin:
+                    cmd_w = [whisper_bin, audio_wav, "--output_format", "vtt", "--output_dir", build_dir]
+                    subprocess.run(cmd_w, capture_output=True, timeout=300)
+                    w_vtt = os.path.splitext(audio_wav)[0] + ".vtt"
+                    if os.path.exists(w_vtt):
+                        with open(w_vtt, "rb") as f:
+                            txt = f.read().decode("utf-8-sig", "replace")
+                    else:
+                        raise VideoParseError("whisper failed to transcribe video audio")
+                else:
+                    raise VideoParseError("video media file has no caption track and whisper is not installed (install with: pip install openai-whisper or brew install whisper-cpp)")
+
+            # Keyframes extraction via ffmpeg
+            assets_dir = os.path.join(build_dir, "assets")
+            os.makedirs(assets_dir, exist_ok=True)
+            kf_pattern = os.path.join(assets_dir, "kf_%04d.jpg")
+            cmd_kf = ["ffmpeg", "-y", "-i", source_path_or_url, "-vf", "select='gt(scene,0.3)',showinfo",
+                      "-vsync", "vfr", "-frames:v", "30", "-q:v", "3", kf_pattern]
+            try:
+                subprocess.run(cmd_kf, capture_output=True, timeout=60)
+            except Exception:
+                pass
+        else:
+            raise VideoParseError(f"unsupported video file format: {ext}")
     else:
-        raise VideoParseError(f"caption source file not found: {source_path_or_url}")
+        raise VideoParseError(f"video source file or URL not found: {source_path_or_url}")
 
     cues, bad_ts, full_txt = parse_vtt_or_srt(txt)
     if not cues:
@@ -139,19 +219,31 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
 
     # Outline from NOTE markers, chapters, or minute ranges
     outline_data = []
-    notes = "\n".join(l for l in full_txt.split("\n") if l.startswith("NOTE"))
-    oidx = 1
-    for m in re.finditer(r"(\d{1,2}:\d{2}(?::\d{2})?)\s+([^,\n]+)", notes):
-        t = parse_clock(m.group(1))
-        if t is not None:
-            m_span = next((s for s in spans_data if s.get("start", 0) >= t), spans_data[-1] if spans_data else None)
+    if yt_chapters:
+        for idx, ch in enumerate(yt_chapters, 1):
+            ch_start = float(ch.get("start_time", 0))
+            ch_title = st.clean_meta(ch.get("title") or f"Chapter {idx}", 120)
+            m_span = next((s for s in spans_data if s.get("start", 0) >= ch_start), spans_data[-1] if spans_data else None)
             outline_data.append({
-                "id": f"o{oidx:03d}",
-                "title": st.clean_meta(m.group(2).strip().rstrip(".").strip(), 120),
+                "id": f"o{idx:03d}",
+                "title": ch_title,
                 "depth": 1,
                 "start_span": m_span["id"] if m_span else None
             })
-            oidx += 1
+    else:
+        notes = "\n".join(l for l in full_txt.split("\n") if l.startswith("NOTE"))
+        oidx = 1
+        for m in re.finditer(r"(\d{1,2}:\d{2}(?::\d{2})?)\s+([^,\n]+)", notes):
+            t = parse_clock(m.group(1))
+            if t is not None:
+                m_span = next((s for s in spans_data if s.get("start", 0) >= t), spans_data[-1] if spans_data else None)
+                outline_data.append({
+                    "id": f"o{oidx:03d}",
+                    "title": st.clean_meta(m.group(2).strip().rstrip(".").strip(), 120),
+                    "depth": 1,
+                    "start_span": m_span["id"] if m_span else None
+                })
+                oidx += 1
 
     if not outline_data:
         # Synthesize top-level outline
@@ -211,7 +303,16 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
 
     assets_dir = os.path.join(build_dir, "assets")
     os.makedirs(assets_dir, exist_ok=True)
-    st.write_json(os.path.join(assets_dir, "index.json"), [])
+    assets_index = []
+    for f in sorted(os.listdir(assets_dir)):
+        if f.endswith((".jpg", ".png")):
+            assets_index.append({
+                "id": os.path.splitext(f)[0],
+                "kind": "keyframe",
+                "path": f"assets/{f}",
+                "locator": title
+            })
+    st.write_json(os.path.join(assets_dir, "index.json"), assets_index)
 
     # Report & Source metadata
     total_chars = sum(len(s["text"]) for s in spans_data)

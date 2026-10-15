@@ -346,6 +346,17 @@ def convert_docx(path):
     raise SourceError("cannot convert DOCX (neither pandoc nor textutil succeeded)")
 
 
+def convert_slides(path):
+    cmd = ["pandoc", path, "-t", "markdown"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            return r.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    raise SourceError("cannot convert presentation slides (pandoc failed or missing)")
+
+
 # ------------------------------------------------------------------ Adapter Build
 def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
     opts = opts or {}
@@ -445,6 +456,9 @@ def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
             title, blocks = parse_notebook(source_path)
         elif ext in (".docx", ".doc"):
             md_text = convert_docx(source_path)
+            title, blocks = parse_markdown(md_text, default_title=os.path.splitext(os.path.basename(source_path))[0])
+        elif ext in (".pptx", ".odp", ".key"):
+            md_text = convert_slides(source_path)
             title, blocks = parse_markdown(md_text, default_title=os.path.splitext(os.path.basename(source_path))[0])
         else:
             with open(source_path, "r", encoding="utf-8", errors="replace") as f:

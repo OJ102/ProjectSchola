@@ -68,7 +68,7 @@ def ingest_timeout():
 
 def parse_args(argv):
     opts = {"slug": None, "vision": "auto", "ocr": "auto", "force": False, "rebuild": False, "vault": True,
-            "json": False, "path": None}
+            "json": False, "path": None, "crawl": False, "max_pages": 50, "yes": False}
     it = iter(argv)
     for a in it:
         if a in ("-h", "--help"):
@@ -86,6 +86,15 @@ def parse_args(argv):
             opts["vault"] = False
         elif a == "--json":
             opts["json"] = True
+        elif a == "--crawl":
+            opts["crawl"] = True
+        elif a in ("--yes", "-y"):
+            opts["yes"] = True
+        elif a == "--max-pages":
+            v = next(it, None)
+            if v is None or not v.isdigit():
+                raise Usage("--max-pages needs an integer value")
+            opts["max_pages"] = int(v)
         elif a.startswith("--"):
             raise Usage(f"unknown option {a}")
         elif opts["path"] is None:
@@ -94,7 +103,8 @@ def parse_args(argv):
             raise Usage("only one source per /ingest")
     if not opts["path"]:
         raise Usage("usage: source-ingest.sh <path> [--slug NAME] [--vision auto|all|none] "
-                    "[--ocr auto|applevision|tesseract|vision|none] [--force] [--rebuild] [--no-vault] [--json]")
+                    "[--ocr auto|applevision|tesseract|vision|none] [--force] [--rebuild] [--no-vault] [--json] "
+                    "[--crawl] [--max-pages N] [--yes]")
     if opts["slug"] is not None:
         check_slug(opts["slug"])
     if opts["vision"] not in ("auto", "all", "none"):
@@ -110,7 +120,7 @@ def detect(path):
         if u.path.lower().endswith(".pdf"):
             raise StoreError("remote PDF URLs are not supported (download the PDF first)")
         if any(h in u.netloc.lower() for h in ("youtube.com", "youtu.be", "vimeo.com")):
-            raise StoreError("video URLs are not supported yet")
+            return "video", 0
         return "web", 0
     if not os.path.exists(path):
         raise StoreError(f"no such file: {path}")
@@ -130,10 +140,10 @@ def detect(path):
         return "notebook", size
     if ext in (".docx", ".doc"):
         return "docx", size
-    if ext in (".vtt", ".srt"):
+    if ext in (".pptx", ".odp", ".key"):
+        return "slides", size
+    if ext in (".vtt", ".srt", ".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4a"):
         return "video", size
-    if ext in (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4a"):
-        raise StoreError("video media files are not supported yet (use .vtt or .srt caption files)")
     with open(path, "rb") as f:
         head = f.read(1024)
     if b"%PDF-" in head:
@@ -190,12 +200,21 @@ def page_list(pages, limit=20):
     return "PDF " + txt + (f", +{len(out) - limit} more ranges" if len(out) > limit else "")
 
 
-def missing_tools(stype="pdf"):
+def missing_tools(stype="pdf", src=None):
     if stype == "pdf":
         return {t: hint for t, hint in REQUIRED.items() if not shutil.which(t)}
-    if stype == "docx":
+    if stype in ("docx", "slides"):
         if not shutil.which("pandoc") and not shutil.which("textutil"):
             return {"pandoc": "brew install pandoc"}
+    if stype == "video":
+        tools = {}
+        if src and "://" in src:
+            if not shutil.which("yt-dlp"):
+                tools["yt-dlp"] = "brew install yt-dlp"
+        elif src and os.path.splitext(src)[1].lower() in (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4a"):
+            if not shutil.which("ffmpeg"):
+                tools["ffmpeg"] = "brew install ffmpeg"
+        return tools
     return {}
 
 
@@ -313,7 +332,7 @@ def run(argv):
     else:
         src = os.path.realpath(os.path.expanduser(opts["path"]))
         stype, size = detect(src)
-    miss = missing_tools(stype)
+    miss = missing_tools(stype, src=src)
     if miss:
         hints = sorted(set(miss.values()))
         raise StoreError(f"missing tools: {', '.join(sorted(miss))}; install with: {'; '.join(hints)}")
@@ -429,7 +448,7 @@ def ingest_locked(st, src, stype, size, opts):
                 print("Up to date (same file, same settings); nothing re-ingested. Use --rebuild to force.")
                 print(summarize(existing, rep or {}, st.dir, vault_note, warnings))
             return 0
-    elif stype in ("epub", "markdown", "notebook", "docx"):
+    elif stype in ("epub", "markdown", "notebook", "docx", "slides"):
         rep = pandocadapter.build(src, build, opts, cache, log=lambda m: print(m, file=sys.stderr))
         with open(os.path.join(build, "source.json"), "r", encoding="utf-8") as f:
             s_meta = json.load(f)

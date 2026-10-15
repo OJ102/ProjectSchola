@@ -448,23 +448,79 @@ css_white = shidden.parse_css(".white-box { background-color: #ffffff; }")
 o("safety: white text with white CSS rule background is hidden",
   shidden.is_hidden("span", {"style": "color: white"}, rules=css_white, ancestors=[("div", {"class": "white-box"})]))
 
-# 7f. Issue 2 regression: video URLs and media files clean errors
+# 7f. Step 6: Video URLs, media files, and slides detection & tool checking
 import ingest as singest
-video_url_err = False
-try:
-    singest.detect("https://www.youtube.com/watch?v=123")
-except singest.StoreError as e:
-    video_url_err = "video URLs are not supported yet" in str(e)
-o("safety: youtube url raises unsupported video URL error", video_url_err)
-
-video_media_err = False
+o("step6: youtube url detected as video", singest.detect("https://www.youtube.com/watch?v=123")[0] == "video")
 import tempfile
 with tempfile.NamedTemporaryFile(suffix=".mp4") as tf:
-    try:
-        singest.detect(tf.name)
-    except singest.StoreError as e:
-        video_media_err = "video media files are not supported yet" in str(e)
-o("safety: video media file raises unsupported video media error", video_media_err)
+    o("step6: video media file detected as video", singest.detect(tf.name)[0] == "video")
+with tempfile.NamedTemporaryFile(suffix=".pptx") as tf:
+    o("step6: pptx file detected as slides", singest.detect(tf.name)[0] == "slides")
+
+miss_yt = singest.missing_tools("video", "https://www.youtube.com/watch?v=123")
+if not shutil.which("yt-dlp"):
+    o("step6: missing yt-dlp reported with brew hint", "yt-dlp" in miss_yt and "brew install yt-dlp" in miss_yt["yt-dlp"])
+else:
+    o("step6: yt-dlp check passes when present", "yt-dlp" not in miss_yt)
+
+# 7g. Step 6: DOCX Adapter Test
+docx_path = os.path.join(FIX_DIR, "sample.docx")
+md_for_docx = """# Neural Network Foundations
+Neural networks are computing systems inspired by biological neural networks.
+
+## Activation Functions
+Activation functions introduce non-linearities into the network.
+"""
+subprocess.run(["pandoc", "-f", "markdown", "-t", "docx", "-o", docx_path], input=md_for_docx, text=True, check=True)
+rc_docx, out_docx, err_docx = run_ingest(docx_path, "docx-foundations")
+o("docx: ingest exit 0", rc_docx == 0, f"rc={rc_docx} {err_docx}")
+store_docx = os.path.join(os.environ["SCHOLA_SOURCES_DIR"], "docx-foundations")
+chk_docx = contract.run(store_docx)
+o("docx: adapter contract passes", not chk_docx.failed, "; ".join(l for l in chk_docx.lines if l.startswith("FAIL")))
+meta_docx = json.load(open(os.path.join(store_docx, "source.json")))
+o("docx: source.json adapter is pandoc", meta_docx.get("adapter") == "pandoc")
+spans_docx = [json.loads(l) for l in open(os.path.join(store_docx, "spans.jsonl"))]
+o("docx: spans extracted (>= 2)", len(spans_docx) >= 2)
+rc_docx_up, out_docx_up, _ = run_ingest(docx_path, "docx-foundations")
+o("docx: re-ingest reports Up to date", rc_docx_up == 0 and "Up to date" in out_docx_up)
+
+# 7h. Step 6: Readability Main-Content Extraction
+import web as sweb
+article_html = """<!DOCTYPE html><html><head><title>Article With Boilerplate</title></head><body>
+<nav><a href="/">Home</a></nav>
+<article>
+<h1>The Transformer Architecture</h1>
+<p>The Transformer is the first transduction model relying entirely on self-attention to compute representations.</p>
+<h2>Attention Mechanisms</h2>
+<p>An attention function can be described as mapping a query and a set of key-value pairs to an output.</p>
+</article>
+<aside><p>Sponsored advertisement and related stories here.</p></aside>
+<footer><p>Contact us at info@example.com</p></footer>
+</body></html>"""
+r_title, r_blocks = sweb.extract_html_content(article_html, "https://example.com/transformer")
+o("readability: article content kept", any("Transformer" in b[2] for b in r_blocks))
+o("readability: aside and footer dropped", not any("Sponsored" in b[2] or "Contact" in b[2] for b in r_blocks))
+
+# 7i. Step 6: Docs Crawl Robots.txt and Link Restriction
+robots_sample = """
+User-agent: Googlebot
+Disallow: /private/
+
+User-agent: *
+Disallow: /admin/
+Disallow: /secret/
+"""
+dis_rules = sweb.parse_robots_txt(robots_sample)
+o("crawl: parse_robots_txt extracts disallow paths for *", "/admin/" in dis_rules and "/secret/" in dis_rules and "/private/" not in dis_rules)
+
+crawled_links = sweb.extract_links("""
+<a href="/docs/intro">Intro</a>
+<a href="/docs/guide/start">Start</a>
+<a href="/other/page">Other</a>
+<a href="https://external.com/page">External</a>
+""", "https://example.com/docs/index")
+o("crawl: extract_links keeps internal prefix links", "https://example.com/docs/intro" in crawled_links and "https://example.com/docs/guide/start" in crawled_links)
+o("crawl: extract_links drops out-of-prefix and external links", not any("other" in l or "external" in l for l in crawled_links))
 
 if FAIL_COUNT > 0:
     sys.exit(1)

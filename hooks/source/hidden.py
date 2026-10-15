@@ -306,10 +306,8 @@ def is_hidden(tag, attrs, rules=(), ancestors=(), has_external_css=False):
                     break
 
             if effective_bg is None:
-                # Better rule: assume a white page unless the page links an external stylesheet
-                # and has a class/id, or a matching class rule sets a background (which would have already set effective_bg).
-                has_class_or_id = bool(attrs.get("class") or attrs.get("id") or any(at.get("class") or at.get("id") for _, at in ancestors))
-                if not (has_ext and has_class_or_id):
+                # Better rule: assume a white page unless the page links an external stylesheet or a matching class rule sets a background
+                if not has_ext:
                     effective_bg = "#ffffff"
 
             if effective_bg and effective_fg == effective_bg:

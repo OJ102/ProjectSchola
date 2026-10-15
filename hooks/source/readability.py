@@ -197,7 +197,13 @@ def extract(raw):
     body = next(iter(find(root, lambda x: x.tag == "body")), root)
     # the page's own <style> rules that hide content (decision 11)
     css = "".join(text_of(x) for x in find(root, lambda x: x.tag == "style"))
-    clean(body, parse_css(css))
+    rules = parse_css(css)
+    has_ext = bool(find(root, lambda x: x.tag == "link" and (
+        "stylesheet" in (x.attrs.get("rel") or "").lower() or (x.attrs.get("href") or "").lower().endswith(".css")
+    )))
+    if has_ext:
+        rules.append(("__meta__", {"has_external_css": True}))
+    clean(body, rules)
     words_all = len(text_of(body).split())
     method, node = None, None
     for tag in ("article", "main"):

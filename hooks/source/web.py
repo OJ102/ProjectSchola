@@ -12,8 +12,10 @@ import hashlib
 import html
 import json
 import os
+import posixpath
 import re
 import sys
+import time
 import urllib.parse
 from html.parser import HTMLParser
 
@@ -180,7 +182,7 @@ class HTMLBlockExtractor(HTMLParser):
         self.cur_text = []
 
 
-def extract_html_content(html_text, origin_url=""):
+def extract_html_content(html_text, origin_url="", opts=None, use_readability=True):
     """Extract structured blocks and outline from HTML text."""
     from hidden import parse_css
     rules = []
@@ -190,6 +192,28 @@ def extract_html_content(html_text, origin_url=""):
                    re.search(r"<link\b[^>]*href=['\"][^'\"]+\.css['\"]?", html_text, re.I))
     if has_ext:
         rules.append(("__meta__", {"has_external_css": True}))
+
+    # 1. Main-content extraction via readability for articles and docs
+    has_article_tags = "<article" in html_text.lower() or "<main" in html_text.lower()
+    if (has_article_tags or (opts and opts.get("article"))) and use_readability:
+        try:
+            node, info = sreadability.extract(html_text)
+            r_title = (info.get("title") or "").strip()
+            if node is not None and info.get("method") in ("article", "main", "scored"):
+                clean_html = sreadability.serialize(node)
+                p_clean = HTMLBlockExtractor(rules)
+                p_clean.feed(clean_html)
+                p_clean.flush()
+                if p_clean.blocks:
+                    title = r_title or p_clean.title.strip() or "Untitled Web Document"
+                    if origin_url and not title:
+                        u = urllib.parse.urlsplit(origin_url)
+                        title = os.path.basename(u.path.rstrip("/")) or u.netloc
+                    return title, p_clean.blocks
+        except Exception:
+            pass
+
+    # 2. Direct HTML block extraction fallback
     parser = HTMLBlockExtractor(rules)
     parser.feed(html_text)
     parser.flush()
@@ -204,6 +228,114 @@ def extract_html_content(html_text, origin_url=""):
     return title, parser.blocks
 
 
+def parse_robots_txt(robots_text, user_agent="*"):
+    disallow = []
+    current_ua_applies = False
+    for line in robots_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" in line:
+            key, _, val = line.partition(":")
+            key, val = key.strip().lower(), val.strip()
+            if key == "user-agent":
+                current_ua_applies = (val == "*" or "schola" in val.lower())
+            elif key == "disallow" and current_ua_applies:
+                if val:
+                    disallow.append(val)
+    return disallow
+
+
+def extract_links(html_text, base_url):
+    links = []
+    seen = set()
+    u_base = urllib.parse.urlsplit(base_url)
+    base_dir = posixpath.dirname(u_base.path)
+    if not base_dir.endswith("/"):
+        base_dir += "/"
+
+    for m in re.finditer(r'<a\b[^>]*\bhref=["\']([^"\']+)["\']', html_text, re.I):
+        href = m.group(1).split("#")[0].strip()
+        if not href or href.startswith(("javascript:", "mailto:", "tel:", "#")):
+            continue
+        full_url = urllib.parse.urljoin(base_url, href)
+        u_full = urllib.parse.urlsplit(full_url)
+        if u_full.scheme in ("http", "https") and u_full.netloc.lower() == u_base.netloc.lower():
+            if u_full.path.startswith(base_dir) or u_full.path.startswith(u_base.path):
+                norm_url = urllib.parse.urlunsplit((u_full.scheme, u_full.netloc, u_full.path, u_full.query, ""))
+                if norm_url not in seen:
+                    seen.add(norm_url)
+                    links.append(norm_url)
+    return links
+
+
+def crawl_docs(start_url, opts=None, log=print):
+    opts = opts or {}
+    max_pages = opts.get("max_pages", 50)
+    deadline = opts.get("deadline")
+    u = urllib.parse.urlsplit(start_url)
+
+    disallow = []
+    robots_url = f"{u.scheme}://{u.netloc}/robots.txt"
+    try:
+        _, _, r_bytes, _ = sfetch.fetch(robots_url, deadline=deadline)
+        disallow = parse_robots_txt(r_bytes.decode("utf-8", "replace"))
+    except Exception:
+        pass
+
+    def allowed(url):
+        p = urllib.parse.urlsplit(url).path
+        for d in disallow:
+            if p.startswith(d):
+                return False
+        return True
+
+    final_url, headers, body_bytes, _ = sfetch.fetch(start_url, deadline=deadline)
+    html_text, _ = sfetch.decode(headers, body_bytes)
+
+    discovered = [final_url]
+    discovered_set = {final_url}
+
+    raw_links = extract_links(html_text, final_url)
+    for lk in raw_links:
+        if lk not in discovered_set and allowed(lk) and len(discovered) < max_pages:
+            discovered_set.add(lk)
+            discovered.append(lk)
+
+    log(f"Discovered {len(discovered)} page(s) to crawl:")
+    for i, p_url in enumerate(discovered, 1):
+        log(f"  {i}. {p_url}")
+
+    if not opts.get("yes"):
+        if sys.stdin.isatty():
+            ans = input(f"Proceed with crawling {len(discovered)} pages? [y/N]: ").strip().lower()
+            if ans not in ("y", "yes"):
+                raise WebParseError("crawl cancelled by user")
+        else:
+            raise WebParseError(f"crawling {len(discovered)} pages requires explicit consent (use --yes to confirm)")
+
+    crawled_pages = []
+    for page_url in discovered:
+        st.check_deadline(deadline, "crawling page")
+        if page_url == final_url:
+            p_html = html_text
+            p_bytes = body_bytes
+        else:
+            time.sleep(0.05)
+            _, _, p_bytes, _ = sfetch.fetch(page_url, deadline=deadline)
+            p_html, _ = sfetch.decode({}, p_bytes)
+
+        p_title, p_blocks = extract_html_content(p_html, page_url, opts=opts)
+        crawled_pages.append({
+            "url": page_url,
+            "title": p_title,
+            "blocks": p_blocks,
+            "bytes": p_bytes,
+        })
+
+    return crawled_pages
+
+
 def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
     """Build the standard store files for a web source."""
     opts = opts or {}
@@ -211,7 +343,88 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
     st.check_deadline(opts.get("deadline"), "web fetch")
 
     is_url = "://" in source_path_or_url
-    if is_url:
+    if is_url and opts.get("crawl"):
+        crawled_pages = crawl_docs(source_path_or_url, opts=opts, log=log)
+        origin = source_path_or_url
+        title = st.clean_meta(crawled_pages[0]["title"], 120)
+        sha = hashlib.sha256(b"".join(p["bytes"] for p in crawled_pages)).hexdigest()
+        etag = None
+
+        segments_data = []
+        spans_data = []
+        outline_data = []
+        seg_idx = 1
+        outline_id_idx = 1
+
+        for p_idx, page in enumerate(crawled_pages, 1):
+            p_title = st.clean_meta(page["title"], 120)
+            page_oid = f"o{outline_id_idx:03d}"
+            outline_id_idx += 1
+            outline_data.append({
+                "id": page_oid,
+                "title": p_title,
+                "depth": 1,
+                "start_span": None
+            })
+
+            cur_seg_id = f"s{seg_idx:04d}"
+            cur_seg_title = p_title
+            cur_seg_spans = []
+            cur_heading = p_title
+            para_count = 0
+
+            for kind, level, text in page["blocks"]:
+                st.check_deadline(opts.get("deadline"), "web block parsing")
+                if kind == "heading":
+                    cur_heading = st.clean_meta(text, 120)
+                    cur_depth = min(3, max(2, level + 1))
+                    para_count = 0
+                    if len(cur_seg_spans) >= 3 and level <= 2:
+                        segments_data.append((cur_seg_id, cur_seg_title, cur_seg_spans))
+                        seg_idx += 1
+                        cur_seg_id = f"s{seg_idx:04d}"
+                        cur_seg_title = cur_heading
+                        cur_seg_spans = []
+
+                    oid = f"o{outline_id_idx:03d}"
+                    outline_id_idx += 1
+                    outline_data.append({
+                        "id": oid,
+                        "title": cur_heading,
+                        "depth": cur_depth,
+                        "start_span": None
+                    })
+                    continue
+
+                para_count += 1
+                span_k = len(cur_seg_spans) + 1
+                sid = f"{cur_seg_id}.{span_k}"
+                loc = f"{p_title} § {cur_heading} ¶{para_count}" if cur_heading != p_title else f"{p_title} ¶{para_count}"
+
+                s_rec = rec(sid, cur_seg_id, loc, kind, text)
+                cur_seg_spans.append(s_rec)
+                spans_data.append(s_rec)
+
+                if outline_data and outline_data[-1]["start_span"] is None:
+                    outline_data[-1]["start_span"] = sid
+                if outline_data and outline_data[0]["start_span"] is None:
+                    outline_data[0]["start_span"] = sid
+
+                if len(cur_seg_spans) >= 25:
+                    segments_data.append((cur_seg_id, cur_seg_title, cur_seg_spans))
+                    seg_idx += 1
+                    cur_seg_id = f"s{seg_idx:04d}"
+                    cur_seg_title = cur_heading
+                    cur_seg_spans = []
+
+            if cur_seg_spans:
+                segments_data.append((cur_seg_id, cur_seg_title, cur_seg_spans))
+                seg_idx += 1
+
+        if not spans_data:
+            raise WebParseError("no extractable content found in crawled web sources")
+
+    elif is_url:
         final_url, headers, body_bytes, hops = sfetch.fetch(source_path_or_url)
         html_text, charset = sfetch.decode(headers, body_bytes)
         origin = final_url
@@ -226,7 +439,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
         etag = None
 
     st.check_deadline(opts.get("deadline"), "web parsing")
-    title, blocks = extract_html_content(html_text, origin)
+    title, blocks = extract_html_content(html_text, origin, opts=opts)
     title = st.clean_meta(title, 120)
 
     # 1. Segments and Spans
@@ -380,6 +593,9 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
         "ingest_version": 1,
         "sha256": sha
     }
+    if opts.get("crawl") and 'crawled_pages' in locals():
+        source_meta["crawl"] = True
+        source_meta["crawled_pages"] = [p["url"] for p in crawled_pages]
     if etag:
         source_meta["etag"] = etag
     st.write_json(os.path.join(build_dir, "source.json"), source_meta)
