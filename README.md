@@ -190,6 +190,10 @@ bash tests/run.sh toggle     # only checks whose group name contains "toggle"
 
 Issues and pull requests are welcome at [OJ102/ProjectSchola](https://github.com/OJ102/ProjectSchola). Please run the suite before you open a pull request.
 
+## License
+
+[MIT](LICENSE) for Project Schola's own code. Parts that come from [amosblomqvist/learn](https://github.com/amosblomqvist/learn), which has no license, remain its author's; see [LICENSE](LICENSE) for the scope.
+
 ## Acknowledgments
 
 - Built on [amosblomqvist/learn](https://github.com/amosblomqvist/learn) and the two teaching principles from Amos Blomqvist's *How I Use AI to Learn Things*.
