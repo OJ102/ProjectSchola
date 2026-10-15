@@ -83,8 +83,23 @@ def where_of(d, u):
     titles = {o["id"]: o["title"] for o in load(d, "outline.json")}
     path = " › ".join(st.clean_meta(titles.get(i, ""), 120) for i in u.get("outline_path", []))
     lo, hi = u["loc_start"], u["loc_end"]
-    pages = f"p. {lo}" if lo == hi else f"pp. {lo}–{hi}"
-    return f"{path or st.clean_meta(u['title'], 120)} ({pages})"
+    name = path or st.clean_meta(u["title"], 120)
+    if paged(d):
+        pages = f"p. {lo}" if lo == hi else f"pp. {lo}–{hi}"
+    else:   # the store's own locators (section names, timestamps), never "p."
+        lo, hi = st.clean_meta(str(lo), 120), st.clean_meta(str(hi), 120)
+        pages = lo if lo == hi else f"{lo}–{hi}"
+        if pages == name:
+            return name
+    return f"{name} ({pages})"
+
+
+def paged(d):
+    """PDF stores have page locators; every other adapter has its own locator form."""
+    try:
+        return load(d, "source.json").get("type", "pdf") in ("pdf", "scanned-pdf")
+    except (OSError, ValueError):
+        return True
 
 
 def unit_file(d, u):
@@ -415,6 +430,9 @@ def cmd_brief(slug, uid, model, factcheck_mode=None, fast_path=None):
                                  or "brief has no cites" in f.get("reason", "")]
             if structural_errors or rep["ok"] == 0:
                 corrupt = True
+            elif any(f.get("reason") == "Where differs from the code-generated value" for f in rep["failures"]):
+                # Where is code-generated: rewrite it in place (e.g. after a locator-format fix)
+                st.atomic_write(bpath, with_where(open(bpath, encoding="utf-8").read(), where).encode())
             elif load(d, os.path.join("briefs", f"{uid}.json")).get("status") == "rejected":
                 corrupt = True   # failed the fact-check last time: never serve it, make a new one
             elif not os.path.exists(vpath):
@@ -478,7 +496,9 @@ def fact_check_tag(d, uid):
         frep = load(d, p)
     except (OSError, ValueError):
         return " · fact-check report unreadable"
-    return f" · fact-check {frep.get('status')}" + (f" ({frep['unchecked']} unchecked)" if frep.get("unchecked") else "")
+    counts = [f"{frep[k]} {label}" for k, label in (("unsupported", "unsupported dropped"), ("partial", "partial"),
+                                                       ("unchecked", "unchecked")) if frep.get(k)]
+    return f" · fact-check {frep.get('status')}" + (f" ({', '.join(counts)})" if counts else "")
 
 
 def cmd_fastpath(slug, uid):

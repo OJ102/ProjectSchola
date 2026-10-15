@@ -402,3 +402,28 @@ except Exception:
     evil_ok = True
 o("b2 vision rejects path traversal in unit id", evil_ok)
 
+
+# 7a''. "partial" verdicts are marked, never shown as verified; --strict serves them with the marks
+st.write_json(os.path.join(FC_STORE, "briefs", "u001.json"), {"status": "verified", "cites": 2, "ok": 2, "dropped": []})
+with open(os.path.join(FC_STORE, "briefs", "u001.md"), "w", encoding="utf-8") as f:
+    f.write(sbrief.with_where(fc_reject_brief.split("\n", 3)[3], fc_where))
+r6 = subprocess.run([sys.executable, "-I", BRIEF_PY, "brief", "fcbook", "u001", "--strict"],
+                    capture_output=True, text=True, env=dict(b_env, FAKE_FC="{}", FAKE_FC_DEFAULT="partial"))
+head6 = r6.stdout.split("\n")[0]
+o("b2 brief --strict: partial verdicts are served marked '(partly supported)', header 'fact-check partial (2 partial)'",
+  r6.returncode == 0 and "fact-check partial (2 partial)" in head6 and "verified ·" not in head6.split("cites verified")[1]
+  and r6.stdout.count("(partly supported)") == 2, f"rc={r6.returncode} {r6.stdout[:400]} {r6.stderr[-200:]}")
+r7 = subprocess.run([sys.executable, "-I", BRIEF_PY, "brief", "fcbook", "u001", "--strict"],
+                    capture_output=True, text=True, env=dict(b_env, FAKE_FC="{}", FAKE_FC_DEFAULT="partial"))
+o("b2 factcheck: re-checking a marked brief does not mark twice",
+  r7.returncode == 0 and r7.stdout.count("(partly supported)") == 2, r7.stdout[:400])
+
+# Where on a non-PDF store uses the store's own locators, never "p."
+src_meta = json.load(open(os.path.join(FC_STORE, "source.json")))
+st.write_json(os.path.join(FC_STORE, "source.json"), dict(src_meta, type="markdown"))
+w_md = sbrief.where_of(FC_STORE, dict(u_fc, loc_start="Graphs", loc_end="Graphs", outline_path=[]))
+w_md2 = sbrief.where_of(FC_STORE, dict(u_fc, loc_start="Intro", loc_end="Trees", outline_path=[]))
+st.write_json(os.path.join(FC_STORE, "source.json"), src_meta)
+w_pdf = sbrief.where_of(FC_STORE, u_fc)
+o("b2 Where: non-PDF store has no 'p.' locator", "p." not in w_md and "p." not in w_md2 and "Intro–Trees" in w_md2, (w_md, w_md2))
+o("b2 Where: PDF store keeps pages", "pp. 10–11" in w_pdf, w_pdf)

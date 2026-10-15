@@ -31,6 +31,19 @@ CLAIM_SECTIONS = {"Core claims", "Definitions", "Key figures", "Equations", "Exa
                   "Further reading"}
 
 
+PARTIAL_MARK = "(partly supported)"
+
+
+def mark_partial(line):
+    """Put the partial-verdict mark just before the line's first cite (once)."""
+    if PARTIAL_MARK in line:
+        return line
+    m = CITE.search(line)
+    if not m:
+        return line.rstrip() + " " + PARTIAL_MARK
+    return line[:m.start()].rstrip() + f" {PARTIAL_MARK} " + line[m.start():]
+
+
 def extract_claims(brief_text):
     """Extract claim items from brief text.
 
@@ -54,7 +67,7 @@ def extract_claims(brief_text):
         found = CITE.findall(line)
         # Strip cites and bullet from line to get pure claim text
         clean_claim = CITE.sub("", line)
-        clean_claim = re.sub(r"^(?:-\s+|\d+\.\s+)", "", clean_claim.strip()).strip()
+        clean_claim = re.sub(r"^(?:-\s+|\d+\.\s+)", "", clean_claim.strip()).replace(PARTIAL_MARK, "").strip()
         claims.append({
             "line": ln_no,
             "section": section,
@@ -191,7 +204,7 @@ def check_brief(store, brief_path, strict=False, spot_check=None, model="sonnet"
         to_check = list(range(total_claims))
 
     detailed_results = []
-    unsupported_lines = set()
+    unsupported_lines, partial_lines = set(), set()
     dropped_claims = []
     for idx in sorted(results.keys()):
         c = claims[idx]
@@ -207,21 +220,24 @@ def check_brief(store, brief_path, strict=False, spot_check=None, model="sonnet"
         if res["verdict"] == "unsupported":
             unsupported_lines.add(c["line"])
             dropped_claims.append(c["raw"])
+        elif res["verdict"] == "partial":
+            partial_lines.add(c["line"])
 
     unchecked = sum(1 for r in results.values() if r["verdict"] == "unchecked")
-    status = "partial" if unsupported_lines else ("unchecked" if unchecked else "verified")
+    status = "partial" if (unsupported_lines or partial_lines) else ("unchecked" if unchecked else "verified")
     # Check if required sections have surviving claims
     surviving_core = sum(1 for c in claims if c["line"] not in unsupported_lines and c["section"] == "Core claims")
     surviving_quiz = sum(1 for c in claims if c["line"] not in unsupported_lines and c["section"] == "Quiz seeds")
     if surviving_core == 0 or surviving_quiz == 0:
         status = "rejected"
 
-    # Drop unsupported claims if configured and not rejected
-    if drop_unsupported and unsupported_lines:
-        if status != "rejected":
-            lines = brief_text.split("\n")
-            new_lines = [ln for i, ln in enumerate(lines, 1) if i not in unsupported_lines]
-            st.atomic_write(brief_path, "\n".join(new_lines) + "\n")
+    # Drop unsupported claims and mark partial ones, if configured and not rejected
+    if drop_unsupported and (unsupported_lines or partial_lines) and status != "rejected":
+        lines = brief_text.split("\n")
+        new_lines = [mark_partial(ln) if i in partial_lines else ln
+                     for i, ln in enumerate(lines, 1) if i not in unsupported_lines]
+        st.atomic_write(brief_path, "\n".join(new_lines) + "\n")
+        if unsupported_lines:
             # Synchronize sidecars
             bdir = os.path.dirname(brief_path)
             jpath = os.path.join(bdir, f"{unit_id}.json")
