@@ -76,6 +76,7 @@ Feed Schola any seminal engineering book, research paper, or lecture deck:
 * **Intelligent Document Processing**: Native Apple Vision OCR on macOS, robust PDF text layer extraction, and automatic page-label alignment (correcting for roman numeral prefaces and inconsistent footers).
 * **Chapter Unit Maps**: Parses book outlines into bite-sized pedagogical units (3–8k tokens) with tracked progress (`started`, `done`, `skipped`).
 * **Zero-Hallucination Citations**: Claims taught from an ingested book are strictly anchored to verified citations `(p. 78: "exact quote")`. If a concept lies outside the source text, Schola explicitly flags it as *(not in the book)* or *(since publication)*.
+* **Content Safety & Hidden Text Filtering**: Filters invisible text, deceptive overlays, and hidden injection vectors. *(Accepted limit: on web pages that link an external stylesheet, white-on-white text is not flagged to avoid false positives without fetching third-party stylesheets through the fetch guard).*
 
 ### 🎨 5. Autonomous Visualizer Subagents
 When an abstract concept clicks best as a visual, Schola invokes dedicated maker subagents:
@@ -278,6 +279,9 @@ Schola executes OCR (via macOS Apple Vision), normalizes page numbers, extracts 
   Units: 12 chapters, 36 modular study units
   Status: Ready for instruction via /teach ddia
 ```
+
+> [!NOTE]
+> **Accepted Limit on External Stylesheets**: On web pages that link an external stylesheet (`<link rel="stylesheet">`), white-on-white text is not flagged for hidden-content removal. This accepted limit avoids false positives without fetching third-party external stylesheets through the fetch guard.
 
 #### Step 2: Teach from the Source
 ```

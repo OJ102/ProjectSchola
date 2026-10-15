@@ -224,6 +224,8 @@ def missing_tools(stype="pdf", src=None):
         elif src and os.path.splitext(src)[1].lower() in (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4a"):
             if not shutil.which("ffmpeg"):
                 tools["ffmpeg"] = "brew install ffmpeg"
+            if not shutil.which("ffprobe"):
+                tools["ffprobe"] = "brew install ffmpeg"
         return tools
     return {}
 

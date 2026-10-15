@@ -588,6 +588,260 @@ finally:
     sweb.sfetch.fetch = orig_fetch
     sys.stdin.isatty = orig_isatty
 
+# -----------------------------------------------------------------------------
+# 7k. Video End-to-End Tests & Security Regressions
+# -----------------------------------------------------------------------------
+import video as svideo
+
+# Set up mock bin directory in PATH for yt-dlp and whisper
+bin_mock_dir = os.path.join(WORK_DIR, "mock_bin")
+os.makedirs(bin_mock_dir, exist_ok=True)
+
+# 1. Mock whisper stand-in script
+mock_whisper_path = os.path.join(bin_mock_dir, "whisper")
+with open(mock_whisper_path, "w", encoding="utf-8") as f:
+    f.write("""#!/usr/bin/env python3
+import sys, os
+wav = sys.argv[1]
+if not os.path.exists(wav) or os.path.getsize(wav) < 100:
+    sys.stderr.write(f"Invalid or missing wav: {wav}\\n")
+    sys.exit(1)
+out_dir = sys.argv[sys.argv.index("--output_dir") + 1]
+vtt_file = os.path.join(out_dir, "audio.vtt")
+with open(vtt_file, "w", encoding="utf-8") as out:
+    out.write(\"\"\"WEBVTT
+
+00:00:00.500 --> 00:00:01.800
+Whisper transcribed audio speech segment
+\"\"\")
+sys.exit(0)
+""")
+os.chmod(mock_whisper_path, 0o755)
+
+# 2. Mock yt-dlp stand-in script enforcing --no-playlist and --ignore-config
+mock_ytdlp_path = os.path.join(bin_mock_dir, "yt-dlp")
+with open(mock_ytdlp_path, "w", encoding="utf-8") as f:
+    f.write("""#!/usr/bin/env python3
+import sys, os, json
+args = sys.argv[1:]
+if "--no-playlist" not in args:
+    sys.stderr.write("Security error: yt-dlp called without --no-playlist\\n")
+    sys.exit(2)
+if "--ignore-config" not in args:
+    sys.stderr.write("Security error: yt-dlp called without --ignore-config\\n")
+    sys.exit(2)
+if "--dump-json" in args:
+    print(json.dumps({
+        "title": "Deep Learning Systems Lecture",
+        "chapters": [
+            {"title": "Introduction to Tensors", "start_time": 0.0},
+            {"title": "Automatic Differentiation", "start_time": 60.0}
+        ]
+    }))
+    sys.exit(0)
+if "--write-subs" in args:
+    sub_base = args[args.index("-o") + 1]
+    with open(sub_base + ".en.vtt", "w", encoding="utf-8") as out:
+        out.write(\"\"\"WEBVTT
+
+00:00:02.000 --> 00:00:06.000
+Welcome to Deep Learning Systems.
+
+00:01:05.000 --> 00:01:10.000
+Automatic differentiation computes gradients efficiently.
+\"\"\")
+    sys.exit(0)
+sys.exit(0)
+""")
+os.chmod(mock_ytdlp_path, 0o755)
+
+saved_path = os.environ.get("PATH", "")
+os.environ["PATH"] = bin_mock_dir + os.pathsep + saved_path
+
+# a) Real ffmpeg & ffprobe test: embedded subtitles & keyframe extraction
+sub_srt_path = os.path.join(FIX_DIR, "real_sub.srt")
+with open(sub_srt_path, "w", encoding="utf-8") as f:
+    f.write("""1
+00:00:00,500 --> 00:00:01,500
+Scene one introductory discussion
+
+2
+00:00:01,600 --> 00:00:02,500
+Scene two subsequent analysis
+""")
+
+mp4_sub_path = os.path.join(FIX_DIR, "real_embedded.mp4")
+cmd_gen_sub = [
+    "ffmpeg", "-y",
+    "-f", "lavfi", "-i", "color=red:duration=1:size=320x240:rate=10",
+    "-f", "lavfi", "-i", "color=blue:duration=1:size=320x240:rate=10",
+    "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0",
+    "-i", sub_srt_path, "-c:v", "libx264", "-c:s", "mov_text", mp4_sub_path
+]
+subprocess.run(cmd_gen_sub, capture_output=True, check=True)
+
+rc_rsub, out_rsub, err_rsub = run_ingest(mp4_sub_path, "video-real-sub")
+o("video e2e: real ffmpeg/ffprobe mp4 with embedded subtitles exit 0", rc_rsub == 0, f"rc={rc_rsub} {err_rsub}")
+
+store_rsub = os.path.join(os.environ["SCHOLA_SOURCES_DIR"], "video-real-sub")
+chk_rsub = contract.run(store_rsub)
+o("video e2e: real mp4 contract passes", not chk_rsub.failed, "; ".join(l for l in chk_rsub.lines if l.startswith("FAIL")))
+
+spans_rsub = [json.loads(l) for l in open(os.path.join(store_rsub, "spans.jsonl"))]
+o("video e2e: real mp4 embedded subtitle cues extracted", len(spans_rsub) == 2 and any("Scene one" in s["text"] for s in spans_rsub))
+
+assets_rsub = os.listdir(os.path.join(store_rsub, "assets"))
+kf_files = [f for f in assets_rsub if f.startswith("kf_") and f.endswith(".jpg")]
+o("video e2e: real ffmpeg scene-change keyframes extracted", len(kf_files) >= 1, f"assets={assets_rsub}")
+
+asset_idx = json.load(open(os.path.join(store_rsub, "assets", "index.json")))
+o("video e2e: keyframes indexed in assets/index.json", any(a.get("kind") == "keyframe" for a in asset_idx))
+
+rc_rsub_up, out_rsub_up, _ = run_ingest(mp4_sub_path, "video-real-sub")
+o("video e2e: real mp4 re-ingest reports Up to date", rc_rsub_up == 0 and "Up to date" in out_rsub_up)
+
+# b) Real ffmpeg audio extraction + whisper transcription mock stand-in
+mp4_aud_path = os.path.join(FIX_DIR, "real_audio.mp4")
+cmd_gen_aud = [
+    "ffmpeg", "-y",
+    "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=10",
+    "-f", "lavfi", "-i", "sine=frequency=1000:duration=2",
+    "-c:v", "libx264", "-c:a", "aac", mp4_aud_path
+]
+subprocess.run(cmd_gen_aud, capture_output=True, check=True)
+
+rc_aud, out_aud, err_aud = run_ingest(mp4_aud_path, "video-real-whisper")
+o("video e2e: real ffmpeg audio extraction + whisper transcribe exit 0", rc_aud == 0, f"rc={rc_aud} {err_aud}")
+
+store_aud = os.path.join(os.environ["SCHOLA_SOURCES_DIR"], "video-real-whisper")
+chk_aud = contract.run(store_aud)
+o("video e2e: audio-transcribed video contract passes", not chk_aud.failed, "; ".join(l for l in chk_aud.lines if l.startswith("FAIL")))
+
+spans_aud = [json.loads(l) for l in open(os.path.join(store_aud, "spans.jsonl"))]
+o("video e2e: whisper transcribed speech span extracted", any("Whisper transcribed" in s["text"] for s in spans_aud))
+
+# c) yt-dlp end-to-end ingestion
+rc_yt, out_yt, err_yt = run_ingest("https://www.youtube.com/watch?v=dl101", "video-ytdlp-e2e")
+o("video e2e: yt-dlp URL ingest exit 0", rc_yt == 0, f"rc={rc_yt} {err_yt}")
+
+store_yt = os.path.join(os.environ["SCHOLA_SOURCES_DIR"], "video-ytdlp-e2e")
+chk_yt = contract.run(store_yt)
+o("video e2e: yt-dlp video contract passes", not chk_yt.failed, "; ".join(l for l in chk_yt.lines if l.startswith("FAIL")))
+
+meta_yt = json.load(open(os.path.join(store_yt, "source.json")))
+o("video e2e: yt-dlp title extracted", meta_yt.get("title") == "Deep Learning Systems Lecture")
+
+outline_yt = json.load(open(os.path.join(store_yt, "outline.json")))
+o("video e2e: yt-dlp chapters extracted to outline", any("Automatic Differentiation" in o_entry.get("title", "") for o_entry in outline_yt))
+
+spans_yt = [json.loads(l) for l in open(os.path.join(store_yt, "spans.jsonl"))]
+o("video e2e: yt-dlp subtitle spans extracted", any("Automatic differentiation computes" in s["text"] for s in spans_yt))
+o("video e2e: yt-dlp deep links include start timestamp t parameter", any("t=65s" in s.get("link", "") for s in spans_yt))
+
+# d) Security regression assertions
+# 1. Dangerous format rejection (concat format disguised as mp4)
+concat_mp4_path = os.path.join(FIX_DIR, "disguised_concat.mp4")
+with open(concat_mp4_path, "w", encoding="utf-8") as f:
+    f.write(f"ffconcat version 1.0\nfile {os.path.basename(mp4_sub_path)}\n")
+try:
+    svideo.build(concat_mp4_path, os.path.join(WORK_DIR, "store_disguised"))
+    o("security: concat format disguised as mp4 rejected", False, "allowed disguised concat file")
+except svideo.VideoParseError as e:
+    o("security: concat format disguised as mp4 rejected", "prohibited video format or demuxer detected: concat" in str(e), str(e))
+
+# 2. Dangerous format rejection (HLS playlist disguised as avi)
+hls_avi_path = os.path.join(FIX_DIR, "disguised_hls.avi")
+with open(hls_avi_path, "w", encoding="utf-8") as f:
+    f.write("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n")
+try:
+    svideo.build(hls_avi_path, os.path.join(WORK_DIR, "store_hls"))
+    o("security: hls disguised as avi rejected", False, "allowed disguised hls file")
+except svideo.VideoParseError as e:
+    o("security: hls disguised as avi rejected", True, str(e))
+
+# 3. Extension and probed format mismatch
+mismatch_path = os.path.join(FIX_DIR, "mismatch.mp4")
+shutil.copyfile(sub_srt_path, mismatch_path)
+try:
+    svideo.build(mismatch_path, os.path.join(WORK_DIR, "store_mismatch"))
+    o("security: invalid container format for mp4 rejected", False, "allowed text file disguised as mp4")
+except svideo.VideoParseError as e:
+    o("security: invalid container format for mp4 rejected", True, str(e))
+
+# 4. Enforce --no-playlist passed to yt-dlp
+with open(os.path.join(HOOKS_DIR, "source", "video.py")) as f:
+    vcode2 = f.read()
+o("security: yt-dlp metadata fetch passes --no-playlist", '--dump-json' in vcode2 and '--no-playlist' in vcode2)
+o("security: yt-dlp subtitle download passes --no-playlist", '--write-subs' in vcode2 and '--no-playlist' in vcode2)
+
+# 5. DeadlineExceeded propagation during keyframe extraction
+orig_timeout_fn = svideo.check_timeout
+def mock_check_timeout_kf(deadline, default_timeout, stage="video processing"):
+    if stage == "keyframe extraction":
+        raise st.DeadlineExceeded("the ingest time limit ran out during keyframe extraction")
+    return orig_timeout_fn(deadline, default_timeout, stage)
+svideo.check_timeout = mock_check_timeout_kf
+try:
+    svideo.build(mp4_sub_path, os.path.join(WORK_DIR, "store_dl_test"))
+    o("security: DeadlineExceeded not swallowed during keyframe extraction", False, "swallowed DeadlineExceeded")
+except st.DeadlineExceeded as e:
+    o("security: DeadlineExceeded not swallowed during keyframe extraction", "keyframe extraction" in str(e), str(e))
+finally:
+    svideo.check_timeout = orig_timeout_fn
+
+# 6. Check that missing ffprobe is caught in missing_tools and video.build
+orig_which_fn = shutil.which
+shutil.which = lambda t: None if t == "ffprobe" else orig_which_fn(t)
+try:
+    miss_ffprobe = singest.missing_tools("video", "sample.mp4")
+    o("security: missing ffprobe reported in missing_tools", "ffprobe" in miss_ffprobe and "brew install ffmpeg" in miss_ffprobe["ffprobe"])
+    try:
+        svideo.build(mp4_sub_path, os.path.join(WORK_DIR, "store_ffprobe_test"))
+        o("security: missing ffprobe raises VideoParseError", False, "did not raise on missing ffprobe")
+    except svideo.VideoParseError as e:
+        o("security: missing ffprobe raises VideoParseError", "ffprobe is required" in str(e))
+finally:
+    shutil.which = orig_which_fn
+
+# 7. Same-second cues produce valid digit-only span IDs matching contract.py ID_RE
+same_sec_vtt = os.path.join(FIX_DIR, "same_sec.vtt")
+with open(same_sec_vtt, "w", encoding="utf-8") as f:
+    f.write("WEBVTT\n\n00:00:02.100 --> 00:00:02.500\nCue A\n\n00:00:02.600 --> 00:00:02.900\nCue B\n")
+same_sec_store = os.path.join(WORK_DIR, "store_same_sec")
+try:
+    svideo.build(same_sec_vtt, same_sec_store)
+    chk_ss = contract.run(same_sec_store, building=True)
+    o("security: same-second cues pass adapter contract", not chk_ss.failed, "; ".join(chk_ss.lines))
+    spans_ss = [json.loads(l) for l in open(os.path.join(same_sec_store, "spans.jsonl"))]
+    o("security: same-second cues have digit-only span IDs", all(re.match(r"^w\d{4}\.\d+$", s["id"]) for s in spans_ss))
+except Exception as e:
+    o("security: same-second cues pass adapter contract", False, str(e))
+
+# 8. FIFO / Device Node / Directory rejection
+if os.path.exists("/dev/null"):
+    try:
+        svideo.build("/dev/null", os.path.join(WORK_DIR, "store_dev_null"))
+        o("security: /dev/null device node rejected", False, "allowed /dev/null")
+    except svideo.VideoParseError as e:
+        o("security: /dev/null device node rejected", "not a regular file" in str(e), str(e))
+
+# 9. Subtitle max size limit (> 50 MB)
+large_sub_path = os.path.join(FIX_DIR, "large.vtt")
+with open(large_sub_path, "wb") as f:
+    f.seek(51 * 1024 * 1024)
+    f.write(b"\0")
+try:
+    svideo.build(large_sub_path, os.path.join(WORK_DIR, "store_large_vtt"))
+    o("security: >50MB subtitle rejected", False, "allowed >50MB subtitle")
+except svideo.VideoParseError as e:
+    o("security: >50MB subtitle rejected", "exceeds maximum size limit" in str(e), str(e))
+
+# 10. ffprobe protocol_whitelist and leading-dash safety in code
+o("security: ffprobe uses -protocol_whitelist file,crypto,data", '-protocol_whitelist' in vcode2 and 'file,crypto,data' in vcode2)
+o("security: ffprobe protects against leading-dash option injection", '"--", origin' in vcode2 or "'--', origin" in vcode2)
+
+os.environ["PATH"] = saved_path
+
 if FAIL_COUNT > 0:
     sys.exit(1)
 sys.exit(0)

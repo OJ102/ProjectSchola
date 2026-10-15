@@ -15,6 +15,10 @@ display:block un-hides). Specificity is not computed: source order decides.
 Selectors with pseudo-classes are ignored.
 Kept on purpose: screen-reader-only text (.sr-only, .visually-hidden, clip
 rect); it is real accessible content.
+
+Accepted limit: On pages linking an external stylesheet (<link rel="stylesheet">),
+white-on-white text is not flagged to avoid false positives without fetching
+third-party stylesheets through the fetch guard.
 """
 import re
 

@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -133,7 +134,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
         # 1. Fetch metadata
         try:
             t = check_timeout(opts.get("deadline"), 60, "fetching video metadata")
-            cmd_meta = ["yt-dlp", "--ignore-config", "--dump-json", "--skip-download", source_path_or_url]
+            cmd_meta = ["yt-dlp", "--ignore-config", "--no-playlist", "--dump-json", "--skip-download", source_path_or_url]
             r_meta = subprocess.run(cmd_meta, capture_output=True, text=True, timeout=t)
             yt_meta = json.loads(r_meta.stdout) if r_meta.returncode == 0 else {}
         except subprocess.TimeoutExpired:
@@ -146,7 +147,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
         sub_out = os.path.join(build_dir, "subs")
         try:
             t = check_timeout(opts.get("deadline"), 120, "downloading video subtitles")
-            cmd_subs = ["yt-dlp", "--ignore-config", "--write-subs", "--write-auto-subs", "--sub-format", "vtt",
+            cmd_subs = ["yt-dlp", "--ignore-config", "--no-playlist", "--write-subs", "--write-auto-subs", "--sub-format", "vtt",
                         "--skip-download", "-o", sub_out, source_path_or_url]
             subprocess.run(cmd_subs, capture_output=True, timeout=t)
         except subprocess.TimeoutExpired:
@@ -164,11 +165,15 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
         txt = raw_bytes.decode("utf-8-sig", "replace")
 
     elif os.path.exists(source_path_or_url):
+        if not (os.path.isfile(source_path_or_url) and stat.S_ISREG(os.stat(source_path_or_url).st_mode)):
+            raise VideoParseError(f"video source is not a regular file: {source_path_or_url}")
         ext = os.path.splitext(source_path_or_url)[1].lower()
         origin = os.path.abspath(source_path_or_url)
         title = st.clean_meta(os.path.splitext(os.path.basename(source_path_or_url))[0], 120)
 
         if ext in (".vtt", ".srt"):
+            if os.path.getsize(source_path_or_url) > 50 * 1024 * 1024:
+                raise VideoParseError(f"subtitle file exceeds maximum size limit of 50 MB: {source_path_or_url}")
             with open(source_path_or_url, "rb") as f:
                 raw_bytes = f.read()
             txt = raw_bytes.decode("utf-8-sig", "replace")
@@ -176,8 +181,52 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
         elif ext in (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4a"):
             if not shutil.which("ffmpeg"):
                 raise VideoParseError("ffmpeg is required to process video media files (install with: brew install ffmpeg)")
+            if not shutil.which("ffprobe"):
+                raise VideoParseError("ffprobe is required to process video media files (install with: brew install ffmpeg)")
+
+            # Probe format using ffprobe before calling ffmpeg
+            cmd_probe = ["ffprobe", "-protocol_whitelist", "file,crypto,data",
+                         "-v", "error", "-show_entries", "format=format_name",
+                         "-of", "default=noprint_wrappers=1:nokey=1", "--", origin]
+            try:
+                t_probe = check_timeout(opts.get("deadline"), 30, "probing video container format")
+                r_probe = subprocess.run(cmd_probe, capture_output=True, text=True, timeout=t_probe)
+            except subprocess.TimeoutExpired:
+                st.check_deadline(opts.get("deadline"), "probing video container format")
+                raise VideoParseError("probing video container format timed out") from None
+
+            if r_probe.returncode != 0:
+                raise VideoParseError(f"ffprobe failed to probe video file: {r_probe.stderr.strip() or 'unknown error'}")
+
+            probed_format = r_probe.stdout.strip()
+            if not probed_format:
+                raise VideoParseError("ffprobe returned empty format for video file")
+
+            probed_lower = probed_format.lower()
+            dangerous = ("hls", "applehttp", "concat", "subfile", "tee", "image2", "pipe")
+            if any(d in probed_lower for d in dangerous):
+                raise VideoParseError(f"prohibited video format or demuxer detected: {probed_format}")
+
+            fmt_parts = [p.strip() for p in probed_lower.split(",")]
+            if ext in (".mp4", ".mov", ".m4a"):
+                allowed = ("mov", "mp4", "m4a", "3gp", "3g2", "mj2")
+                if not any(p in allowed or "mp4" in p or "mov" in p or "m4a" in p for p in fmt_parts):
+                    raise VideoParseError(f"probed format '{probed_format}' does not match expected container format for {ext}")
+                demuxer = "mov"
+            elif ext in (".mkv", ".webm"):
+                allowed = ("matroska", "webm")
+                if not any(p in allowed or "matroska" in p or "webm" in p for p in fmt_parts):
+                    raise VideoParseError(f"probed format '{probed_format}' does not match expected container format for {ext}")
+                demuxer = "matroska"
+            elif ext == ".avi":
+                if not any(p == "avi" for p in fmt_parts):
+                    raise VideoParseError(f"probed format '{probed_format}' does not match expected container format for {ext}")
+                demuxer = "avi"
+            else:
+                raise VideoParseError(f"unsupported video file format: {ext}")
+
             h = hashlib.sha256()
-            with open(source_path_or_url, "rb") as f:
+            with open(origin, "rb") as f:
                 for chunk in iter(lambda: f.read(1 << 20), b""):
                     h.update(chunk)
             sha = h.hexdigest()
@@ -185,7 +234,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
             # Try extracting embedded subtitle track
             vtt_out = os.path.join(build_dir, "embedded.vtt")
             cmd_sub = ["ffmpeg", "-nostdin", "-protocol_whitelist", "file,crypto,data",
-                       "-y", "-i", source_path_or_url, "-map", "0:s:0", vtt_out]
+                       "-y", "-f", demuxer, "-i", origin, "-map", "0:s:0", vtt_out]
             try:
                 t = check_timeout(opts.get("deadline"), 30, "extracting embedded subtitles")
                 r_sub = subprocess.run(cmd_sub, capture_output=True, timeout=t)
@@ -199,7 +248,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
                 # Audio extraction + whisper transcription
                 audio_wav = os.path.join(build_dir, "audio.wav")
                 cmd_aud = ["ffmpeg", "-nostdin", "-protocol_whitelist", "file,crypto,data",
-                           "-y", "-i", source_path_or_url, "-vn", "-ar", "16000", "-ac", "1", audio_wav]
+                           "-y", "-f", demuxer, "-i", origin, "-vn", "-ar", "16000", "-ac", "1", audio_wav]
                 try:
                     t = check_timeout(opts.get("deadline"), 120, "extracting audio")
                     subprocess.run(cmd_aud, capture_output=True, timeout=t)
@@ -230,12 +279,21 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
             os.makedirs(assets_dir, exist_ok=True)
             kf_pattern = os.path.join(assets_dir, "kf_%04d.jpg")
             cmd_kf = ["ffmpeg", "-nostdin", "-protocol_whitelist", "file,crypto,data",
-                      "-y", "-i", source_path_or_url, "-vf", "select='gt(scene,0.3)',showinfo",
-                      "-vsync", "vfr", "-frames:v", "30", "-q:v", "3", kf_pattern]
+                      "-y", "-f", demuxer, "-i", origin, "-vf", "select='gt(scene,0.3)',showinfo",
+                      "-fps_mode", "vfr", "-frames:v", "30", "-q:v", "3", kf_pattern]
             try:
                 t = check_timeout(opts.get("deadline"), 60, "keyframe extraction")
-                subprocess.run(cmd_kf, capture_output=True, timeout=t)
-            except (subprocess.TimeoutExpired, Exception):
+                r_kf = subprocess.run(cmd_kf, capture_output=True, timeout=t)
+                if r_kf.returncode != 0:
+                    cmd_kf_old = ["ffmpeg", "-nostdin", "-protocol_whitelist", "file,crypto,data",
+                                  "-y", "-f", demuxer, "-i", origin, "-vf", "select='gt(scene,0.3)',showinfo",
+                                  "-vsync", "vfr", "-frames:v", "30", "-q:v", "3", kf_pattern]
+                    subprocess.run(cmd_kf_old, capture_output=True, timeout=t)
+            except subprocess.TimeoutExpired:
+                st.check_deadline(opts.get("deadline"), "keyframe extraction")
+            except st.DeadlineExceeded:
+                raise
+            except Exception:
                 pass
         else:
             raise VideoParseError(f"unsupported video file format: {ext}")
@@ -257,9 +315,8 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
         if spans_data and norm(body) == spans_data[-1]["norm"]:
             continue
         seg_id = f"w{int(start // 60):04d}"
-        base_id = f"{seg_id}.{int(start % 60):02d}"
-        used_ids[base_id] = used_ids.get(base_id, 0) + 1
-        sid = base_id if used_ids[base_id] == 1 else f"{base_id}_{used_ids[base_id]}"
+        used_ids[seg_id] = used_ids.get(seg_id, 0) + 1
+        sid = f"{seg_id}.{used_ids[seg_id]:02d}"
 
         loc = hms(start)
         extra = {"start": start, "end": end, "segment_window": seg_id}
@@ -363,6 +420,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
             assets_index.append({
                 "id": os.path.splitext(f)[0],
                 "kind": "keyframe",
+                "file": f,
                 "path": f"assets/{f}",
                 "locator": title
             })
