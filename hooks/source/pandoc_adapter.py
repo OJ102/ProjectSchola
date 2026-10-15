@@ -33,6 +33,7 @@ class SourceError(Exception):
 
 
 def rec(sid, segment, locator, kind, text, **extra):
+    locator = st.clean_meta(locator, 200)
     text = neutralize(text)
     n = norm(text)
     return dict(id=sid, segment=segment, locator=locator, kind=kind, text=text, norm=n,
@@ -363,6 +364,7 @@ def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
 
     if ext == ".epub":
         title, raw_outline, targets, chapter_items, total_chars, captured_chars, hidden_chars = parse_epub(source_path)
+        title = st.clean_meta(title, 120)
         seg_idx = 0
         span_k = 0
         path = []
@@ -373,7 +375,7 @@ def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
         for i, o in enumerate(raw_outline):
             outline_data.append({
                 "id": f"o{i+1:03d}",
-                "title": o["title"][:120],
+                "title": st.clean_meta(o["title"], 120),
                 "depth": o["depth"],
                 "start_span": None
             })
@@ -409,8 +411,8 @@ def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
                     para += 1
                 span_k += 1
 
-                sub = head or (path[-1] if len(path) > 1 else None)
-                loc = path[0] if path else title
+                sub = st.clean_meta(head or (path[-1] if len(path) > 1 else None), 120)
+                loc = st.clean_meta(path[0] if path else title, 120)
                 if sub and sub != loc:
                     loc += f" § {sub}"
                 if kind != "heading":
@@ -447,6 +449,7 @@ def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
                 md_text = f.read()
             title, blocks = parse_markdown(md_text, default_title=os.path.splitext(os.path.basename(source_path))[0])
 
+        title = st.clean_meta(title, 120)
         total_chars = captured_chars = sum(len(b[2]) for b in blocks)
         seg_idx = 1
         cur_seg_id = f"s{seg_idx:04d}"
@@ -458,7 +461,7 @@ def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
 
         outline_data.append({
             "id": f"o{outline_id_idx:03d}",
-            "title": cur_seg_title[:120],
+            "title": cur_seg_title,
             "depth": 1,
             "start_span": None
         })
@@ -466,20 +469,20 @@ def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
 
         for kind, level, text in blocks:
             if kind == "heading":
-                cur_heading = text
+                cur_heading = st.clean_meta(text, 120)
                 para_count = 0
                 if len(cur_seg_spans) >= 3 and level <= 2:
                     segments_data.append((cur_seg_id, cur_seg_title, cur_seg_spans))
                     seg_idx += 1
                     cur_seg_id = f"s{seg_idx:04d}"
-                    cur_seg_title = text
+                    cur_seg_title = cur_heading
                     cur_seg_spans = []
 
                 oid = f"o{outline_id_idx:03d}"
                 outline_id_idx += 1
                 outline_data.append({
                     "id": oid,
-                    "title": text[:120],
+                    "title": cur_heading,
                     "depth": min(3, max(1, level)),
                     "start_span": None
                 })
@@ -526,7 +529,7 @@ def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
         seg_toks = sum(len(s["text"]) // 4 for s in s_spans)
         seg_index.append({
             "id": seg_id,
-            "locator": s_title,
+            "locator": st.clean_meta(s_title, 120),
             "kind": "text",
             "tokens": seg_toks,
             "has_figures": False,

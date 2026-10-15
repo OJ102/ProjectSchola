@@ -24,6 +24,7 @@ class VideoParseError(Exception):
 
 
 def rec(sid, segment, locator, kind, text, **extra):
+    locator = st.clean_meta(locator, 200)
     text = neutralize(text)
     n = norm(text)
     return dict(id=sid, segment=segment, locator=locator, kind=kind, text=text, norm=n,
@@ -102,7 +103,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
         txt = raw_bytes.decode("utf-8-sig", "replace")
         origin = os.path.abspath(source_path_or_url)
         sha = hashlib.sha256(raw_bytes).hexdigest()
-        title = os.path.splitext(os.path.basename(source_path_or_url))[0]
+        title = st.clean_meta(os.path.splitext(os.path.basename(source_path_or_url))[0], 120)
     else:
         raise VideoParseError(f"caption source file not found: {source_path_or_url}")
 
@@ -141,11 +142,12 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
     for m in re.finditer(r"(\d{1,2}:\d{2}(?::\d{2})?)\s+([^,\n]+)", notes):
         t = parse_clock(m.group(1))
         if t is not None:
+            m_span = next((s for s in spans_data if s.get("start", 0) >= t), spans_data[-1] if spans_data else None)
             outline_data.append({
                 "id": f"o{oidx:03d}",
-                "title": m.group(2).strip().rstrip(".").strip()[:120],
+                "title": st.clean_meta(m.group(2).strip().rstrip(".").strip(), 120),
                 "depth": 1,
-                "start_span": None
+                "start_span": m_span["id"] if m_span else None
             })
             oidx += 1
 
@@ -171,7 +173,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
         seg_toks = sum(len(s["text"]) // 4 for s in s_spans)
         seg_index.append({
             "id": seg_id,
-            "locator": f"{title} [{seg_id}]",
+            "locator": st.clean_meta(f"{title} [{seg_id}]", 120),
             "kind": "text",
             "tokens": seg_toks,
             "has_figures": False,

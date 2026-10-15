@@ -407,21 +407,23 @@ def extract_allowed_spans(entries, store, taught_units, explicit_brief_paths):
             except Exception:
                 pass
 
-    for e in entries:
-        msg = e.get("message") or {}
-        content = msg.get("content")
-        blocks = content if isinstance(content, list) else []
-        for c in blocks:
-            if isinstance(c, dict) and c.get("type") == "tool_result":
-                body = c.get("content")
-                if isinstance(body, list):
-                    body = "".join(x.get("text", "") for x in body if isinstance(x, dict))
-                body = body or ""
-                lookup_ids |= {m for m in re.findall(r"\b(p\d{4}\.\d+|ch\d{2}\.\d+|t\d{2}:\d{2}:\d{2})\b", body) if m in spans}
-        res = e.get("toolUseResult")
-        if res:
-            res_str = json.dumps(res) if not isinstance(res, str) else res
-            lookup_ids |= {m for m in re.findall(r"\b(p\d{4}\.\d+|ch\d{2}\.\d+|t\d{2}:\d{2}:\d{2})\b", res_str) if m in spans}
+    span_pat = re.compile(r"\b(" + "|".join(re.escape(k) for k in spans.keys()) + r")\b") if spans else None
+    if span_pat:
+        for e in entries:
+            msg = e.get("message") or {}
+            content = msg.get("content")
+            blocks = content if isinstance(content, list) else []
+            for c in blocks:
+                if isinstance(c, dict) and c.get("type") == "tool_result":
+                    body = c.get("content")
+                    if isinstance(body, list):
+                        body = "".join(x.get("text", "") for x in body if isinstance(x, dict))
+                    body = body or ""
+                    lookup_ids |= set(span_pat.findall(body))
+            res = e.get("toolUseResult")
+            if res:
+                res_str = json.dumps(res) if not isinstance(res, str) else res
+                lookup_ids |= set(span_pat.findall(res_str))
 
     return brief_ids | lookup_ids
 

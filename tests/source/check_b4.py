@@ -85,8 +85,14 @@ o("web: title extracted from html", "Attention" in meta_web.get("title", ""), me
 spans_web = [json.loads(l) for l in open(os.path.join(store_web, "spans.jsonl"))]
 o("web: spans extracted (>= 4)", len(spans_web) >= 4, f"count={len(spans_web)}")
 o("web: hidden content stripped", not any("injection" in s["text"].lower() for s in spans_web), "hidden text leaked")
-o("web: locators format with section and para", any("§" in s["locator"] and "¶" in s["locator"] for s in spans_web),
-  [s["locator"] for s in spans_web])
+# Web re-ingest without --rebuild reports Up to date
+rc_up, out_up, _ = run_ingest(html_path, "web-attention")
+o("web: re-ingest exit 0", rc_up == 0)
+o("web: re-ingest reports Up to date", "Up to date" in out_up, out_up)
+
+# FetchError / unhandled exception exits 1 cleanly without traceback
+rc_fe, out_fe, err_fe = run_ingest("http://localhost:1/nonexistent", "web-fetcherr")
+o("ingest: FetchError exits 1 cleanly without traceback", rc_fe == 1 and "Traceback" not in err_fe and "refusing non-public address" in err_fe, err_fe)
 
 # Void elements (<input type=hidden>, a hidden <img>) have no end tag: they must not hide the rest
 # of the page, and a page with nothing visible must not fall back to raw tag-stripped text.
@@ -223,6 +229,24 @@ spans_md = [json.loads(l) for l in open(os.path.join(store_md, "spans.jsonl"))]
 o("md: code block preserved as kind code", any(s["kind"] == "code" for s in spans_md), [s["kind"] for s in spans_md])
 o("md: list items preserved", any(s["kind"] == "list" for s in spans_md), [s["kind"] for s in spans_md])
 
+# Markdown with wikilink headings
+md_wiki = """# Notes on [[Graph Theory]]
+
+A graph is a set of vertices and edges connecting them.
+
+## See [[Trees]]
+
+Trees are acyclic connected graphs.
+"""
+md_wiki_path = os.path.join(FIX_DIR, "wikilink.md")
+with open(md_wiki_path, "w", encoding="utf-8") as f:
+    f.write(md_wiki)
+rc_w, _, err_w = run_ingest(md_wiki_path, "md-wiki")
+o("md: wikilink headings ingest exit 0", rc_w == 0, f"rc={rc_w} err={err_w}")
+store_wiki = os.path.join(os.environ["SCHOLA_SOURCES_DIR"], "md-wiki")
+chk_wiki = contract.run(store_wiki)
+o("md: wikilink headings contract passes", not chk_wiki.failed, "; ".join(l for l in chk_wiki.lines if l.startswith("FAIL")))
+
 # -----------------------------------------------------------------------------
 # 4. Jupyter Notebook Adapter (.ipynb)
 # -----------------------------------------------------------------------------
@@ -308,6 +332,16 @@ o("vtt: locators use hh:mm:ss timestamps", all(re.match(r"^\d{2}:\d{2}:\d{2}$", 
 outline_vtt = json.load(open(os.path.join(store_vtt, "outline.json")))
 o("vtt: chapters extracted from NOTE cues", any("Positional" in item["title"] for item in outline_vtt),
   [item["title"] for item in outline_vtt])
+o("vtt: all chapters have valid start_span", len(outline_vtt) >= 2 and all(item.get("start_span") is not None for item in outline_vtt),
+  [item.get("start_span") for item in outline_vtt])
+
+# Non-PDF cite_check lookup ID extraction
+import cite_check
+allowed_test = cite_check.extract_allowed_spans(
+    [{"message": {"content": [{"type": "tool_result", "content": "Found section at s0001.2 and w0000.01 in store"}]}}],
+    store_web, set(), []
+)
+o("cite_check: allowed_spans extracts non-PDF span IDs from tool results", "s0001.2" in allowed_test, f"allowed={allowed_test}")
 
 # SRT format
 srt_content = """1

@@ -38,6 +38,7 @@ import pdf as pdfadapter  # noqa: E402
 import web as webadapter  # noqa: E402
 import pandoc_adapter as pandocadapter  # noqa: E402
 import video as videoadapter  # noqa: E402
+import fetch as fetchadapter  # noqa: E402
 import contract  # noqa: E402
 from store import (SLUG_RE, Locked, Store, StoreError, check_slug, clean_meta, meta_text, sha256_file,  # noqa: E402
                    slugify, sources_root, update_vault, vault_root, write_json)
@@ -107,6 +108,8 @@ def detect(path):
         u = urllib.parse.urlsplit(path)
         if u.path.lower().endswith(".pdf"):
             raise StoreError("remote PDF URLs are not supported (download the PDF first)")
+        if any(h in u.netloc.lower() for h in ("youtube.com", "youtu.be", "vimeo.com")):
+            return "video_url", 0
         return "web", 0
     if not os.path.exists(path):
         raise StoreError(f"no such file: {path}")
@@ -128,6 +131,8 @@ def detect(path):
         return "docx", size
     if ext in (".vtt", ".srt"):
         return "video", size
+    if ext in (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4a"):
+        return "video_media", size
     with open(path, "rb") as f:
         head = f.read(1024)
     if b"%PDF-" in head:
@@ -187,6 +192,16 @@ def page_list(pages, limit=20):
 def missing_tools(stype="pdf"):
     if stype == "pdf":
         return {t: hint for t, hint in REQUIRED.items() if not shutil.which(t)}
+    if stype == "docx":
+        if not shutil.which("pandoc") and not shutil.which("textutil"):
+            return {"pandoc": "brew install pandoc"}
+    if stype in ("video_media", "video_url"):
+        tools = {}
+        if not shutil.which("yt-dlp"):
+            tools["yt-dlp"] = "brew install yt-dlp"
+        if not shutil.which("ffmpeg"):
+            tools["ffmpeg"] = "brew install ffmpeg"
+        return tools
     return {}
 
 
@@ -349,7 +364,9 @@ def ingest_locked(st, src, stype, size, opts):
         sha = sha256_file(src, MAX_SOURCE)
     cache = st.cache_dir(sha)
     settings = {"ocr": opts["ocr"], "vision": opts["vision"], "code": code_hash()}
-    if existing and existing.get("status") == "complete" and existing.get("sha256") == sha \
+    content_match = existing and existing.get("sha256") == sha
+    url_match = existing and ("://" in src) and (existing.get("url_sha") == sha or existing.get("origin") == src)
+    if existing and existing.get("status") == "complete" and (content_match or url_match) \
             and existing.get("ingest_version") == INGEST_VERSION and existing.get("settings") == settings \
             and not opts["rebuild"]:
         try:
@@ -448,6 +465,8 @@ def ingest_locked(st, src, stype, size, opts):
         "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "settings": settings,
         "license_note": "Personal local copy for study. Never publish, push or upload this store."
     })
+    if "://" in src:
+        meta["url_sha"] = hashlib.sha256(src.encode()).hexdigest()
     rep["units_undersized"] = sum(1 for u in json.load(open(os.path.join(build, "units.json")))
                                   if u.get("undersized"))
     if stype == "pdf":
@@ -567,7 +586,9 @@ def main():
     except pdfadapter.DeadlineExceeded as e:
         print(f"ingest: {e} (time limit {ingest_timeout():.0f}s; run /ingest again to resume)", file=sys.stderr)
         sys.exit(6)
-    except (StoreError, pdfadapter.AdapterError, OSError) as e:
+    except (StoreError, pdfadapter.AdapterError, webadapter.WebParseError,
+            pandocadapter.SourceError, videoadapter.VideoParseError,
+            fetchadapter.FetchError, json.JSONDecodeError, OSError) as e:
         print(f"ingest: {e}", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:

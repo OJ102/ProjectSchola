@@ -32,6 +32,7 @@ class WebParseError(Exception):
 
 
 def rec(sid, segment, locator, kind, text, **extra):
+    locator = st.clean_meta(locator, 200)
     text = neutralize(text)
     n = norm(text)
     return dict(id=sid, segment=segment, locator=locator, kind=kind, text=text, norm=n,
@@ -248,7 +249,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
 
     for kind, level, text in blocks:
         if kind == "heading":
-            cur_heading = text
+            cur_heading = st.clean_meta(text, 120)
             cur_depth = min(3, max(1, level))
             para_count = 0
             # If current segment already has spans, start a new segment for significant headings
@@ -257,14 +258,14 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
                 segments_data.append((cur_seg_id, cur_seg_title, cur_seg_spans))
                 seg_idx += 1
                 cur_seg_id = f"s{seg_idx:04d}"
-                cur_seg_title = text
+                cur_seg_title = cur_heading
                 cur_seg_spans = []
 
             oid = f"o{outline_id_idx:03d}"
             outline_id_idx += 1
             outline_data.append({
                 "id": oid,
-                "title": text[:120],
+                "title": cur_heading,
                 "depth": cur_depth,
                 "start_span": None
             })
