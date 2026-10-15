@@ -38,6 +38,10 @@ def rec(sid, segment, locator, kind, text, **extra):
                 sha1=hashlib.sha1(n.encode()).hexdigest(), **extra)
 
 
+# Elements with no end tag (same set as pandoc_adapter.VOID).
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
+
 class HTMLBlockExtractor(HTMLParser):
     def __init__(self, rules=()):
         super().__init__(convert_charrefs=True)
@@ -56,6 +60,9 @@ class HTMLBlockExtractor(HTMLParser):
         a = {k.lower(): (v or "") for k, v in attrs}
         if tag == "title":
             self.in_title = True
+            return
+        if tag in VOID:   # never closed: pushing one would hide (or swallow) the rest of the page
+            self.handle_startendtag(tag, attrs)
             return
         hide = tag in ("script", "style", "noscript", "svg", "nav", "footer", "header") or \
                is_hidden(tag, a, self.rules, [(t, at) for t, _, at in self.stack])
@@ -127,16 +134,9 @@ def extract_html_content(html_text, origin_url=""):
         u = urllib.parse.urlsplit(origin_url)
         title = os.path.basename(u.path.rstrip("/")) or u.netloc
 
-    blocks = parser.blocks
-    if not blocks:
-        # Fallback to plain paragraphs
-        plain = re.sub(r"<[^>]+>", " ", html_text)
-        for chunk in plain.split("\n\n"):
-            c = re.sub(r"\s+", " ", chunk).strip()
-            if len(c) > 10:
-                blocks.append(("para", 0, c))
-
-    return title, blocks
+    # No fallback to tag-stripped raw text: that would bring back the script, style and hidden
+    # content the parser removed. Nothing visible means no content (build() refuses it).
+    return title, parser.blocks
 
 
 def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
