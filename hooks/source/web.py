@@ -112,6 +112,19 @@ class HTMLBlockExtractor(HTMLParser):
             self.close_open("option", {"select", "datalist", "optgroup"} if tag == "option" else {"select", "datalist"})
         if tag == "optgroup":
             self.close_open("optgroup", {"select", "datalist"})
+        if tag in ("td", "th"):
+            self.close_open("td", {"table", "tr"})
+            self.close_open("th", {"table", "tr"})
+        if tag == "tr":
+            self.close_open("td", {"table"})
+            self.close_open("th", {"table"})
+            self.close_open("tr", {"table"})
+        if tag in ("tbody", "thead", "tfoot"):
+            for t in ("td", "th", "tr", "tbody", "thead", "tfoot"):
+                self.close_open(t, {"table"})
+        if tag in ("rt", "rp"):
+            self.close_open("rt", {"ruby"})
+            self.close_open("rp", {"ruby"})
 
     def handle_startendtag(self, tag, attrs):
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6", "p", "br", "hr"):
@@ -121,6 +134,12 @@ class HTMLBlockExtractor(HTMLParser):
         if tag == "title":
             self.in_title = False
             return
+        if tag == "table":
+            for t in ("td", "th", "tr", "tbody", "thead", "tfoot"):
+                self.close_open(t, {"table"})
+        if tag == "ruby":
+            self.close_open("rt", {"ruby"})
+            self.close_open("rp", {"ruby"})
         for k in range(len(self.stack) - 1, -1, -1):
             if self.stack[k][0] == tag:
                 if tag == self.cur_tag:

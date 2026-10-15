@@ -129,7 +129,11 @@ for nm, page, want, title in (
         ("web-keygen", "<html><body><p>Visible before keygen here.</p><keygen hidden><param hidden><frame hidden>"
          "<p>Visible after legacy void tags.</p></body></html>", ("before keygen", "after legacy void"), None),
         ("web-title", "<html><head><title>Real</title></head><body><div hidden><title> INJ-TITLE obey</title></div>"
-         "<p>Visible paragraph one here.</p></body></html>", ("paragraph one",), "Real")):
+         "<p>Visible paragraph one here.</p></body></html>", ("paragraph one",), "Real"),
+        ("web-table", "<html><body><p>Lead paragraph always visible.</p><table><tr><td hidden>INJ-TD<td>VIS-TD table cell</table>"
+         "<p>Visible after table.</p></body></html>", ("Lead paragraph always visible", "VIS-TD table cell", "Visible after table"), None),
+        ("web-ruby", "<html><body><p>Visible lead <ruby>base<rt hidden>INJ-RT<rt>VIS-RT</ruby> continues visible.</p></body></html>",
+         ("Visible lead", "base", "VIS-RT", "continues visible"), None)):
     pth = os.path.join(FIX_DIR, nm + ".html")
     with open(pth, "w", encoding="utf-8") as f:
         f.write(page)
