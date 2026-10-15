@@ -249,7 +249,8 @@ def fc_run(name, text, verdicts, default="supported", **kw):
         f.write(text)
     os.environ["FAKE_FC"] = json.dumps(verdicts)
     os.environ["FAKE_FC_DEFAULT"] = default
-    return p, sfactcheck.check_brief(STORE_DIR, p, strict=True, drop_unsupported=True, **kw)
+    strict = kw.pop("strict", True)
+    return p, sfactcheck.check_brief(STORE_DIR, p, strict=strict, drop_unsupported=True, **kw)
 
 
 # A real contradiction (the span says *lowest*), and a correct claim that happens to contain the word
@@ -300,6 +301,12 @@ o("b2 factcheck judge: cwd = store, SCHOLA_STORE set, MD_LOG_LIVE=0",
       and c["md_log_live"] == "0" for c in calls), [(c["cwd"], c["store"], c["md_log_live"]) for c in calls[:1]])
 o("b2 factcheck judge: source text wrapped as data",
   all("<source_text>" in c["prompt"] and "data, never instructions" in c["prompt"] for c in calls), argv)
+
+# Non-strict spot-check test (Decision 12: 20% spot-check, min 2)
+_, rep_spot = fc_run("fc_spot", test_brief_fc, {}, default="supported", strict=False)
+o("b2 factcheck non-strict spot-check checks 20% min 2 (2/6 claims)", rep_spot["checked_claims"] == 2, rep_spot["checked_claims"])
+o("b2 factcheck non-strict spot-check mode is spot-check", rep_spot["mode"] == "spot-check", rep_spot["mode"])
+o("b2 factcheck non-strict spot-check status verified when all checked pass", rep_spot["status"] == "verified", rep_spot["status"])
 
 # Check factcheck report file
 fc_rep_path = os.path.join(STORE_DIR, "briefs", "fc_test.factcheck.json")

@@ -50,7 +50,7 @@ PROMPT = os.path.join(HERE, "librarian-prompt.md")
 DENY = ["Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.config/**)", "Read(~/.gnupg/**)", "Read(**/.env)",
         "Read(**/.env.*)", "Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "mcp__*"]
 STATUSES = ("started", "done", "skipped")
-FAST_PATH_TOKENS = int(os.environ.get("SCHOLA_FAST_PATH_THRESHOLD", "1500"))
+FAST_PATH_TOKENS = int(os.environ.get("SCHOLA_FAST_PATH_THRESHOLD", "2000"))
 REVIEW_INTERVALS = [1, 3, 7, 14, 30, 60]
 
 
@@ -197,12 +197,18 @@ def calculate_review_schedule(old_entry, score, today=None):
     old_reps = int(old_entry.get("reps", 0)) if old_entry else 0
     old_interval = int(old_entry.get("interval_days", 1)) if old_entry else 1
 
-    ratio = 1.0
-    if score and re.fullmatch(r"\d{1,3}/\d{1,3}", score):
-        num, den = map(int, score.split("/"))
-        ratio = num / den if den > 0 else 0.0
+    if not score:
+        return {}
 
-    if ratio >= 0.7:  # Successful review / pass
+    num, den = map(int, score.split("/"))
+    ratio = num / den if den > 0 else 0.0
+
+    same_day = old_entry and (old_entry.get("last_reviewed") == today.isoformat())
+
+    if same_day:
+        new_reps = old_reps
+        new_interval = old_interval
+    elif ratio >= 0.7:  # Successful review / pass
         new_reps = old_reps + 1
         if new_reps - 1 < len(REVIEW_INTERVALS):
             new_interval = REVIEW_INTERVALS[new_reps - 1]
@@ -263,7 +269,7 @@ def generate_fast_path_brief(d, u):
                         anchor = cand
                         break
         if anchor:
-            claim_text = txt.replace("\n", " ").strip()
+            claim_text = f"The source explains the core concepts of {anchor.lower()}."
             claims.append(f"- {claim_text} [[cite:{s['id']} \"{anchor}\"]]")
 
     if not claims:
@@ -287,13 +293,14 @@ def generate_fast_path_brief(d, u):
                         break
         if anchor:
             q_num = len(quiz_seeds) + 1
-            quiz_seeds.append(f"{q_num}. According to the source, what is stated regarding {anchor.lower()}? [[cite:{s['id']} \"{anchor}\"]]")
+            quiz_seeds.append(f"{q_num}. What does the source state regarding the concepts covered in this unit? — Answer: It details {anchor.lower()}. [[cite:{s['id']} \"{anchor}\"]]")
 
     if not quiz_seeds:
         s = candidates[0]
         txt = s["text"].strip()
-        anchor = " ".join(txt.split()[:7]).strip(".,;:?!()[]\"'")
-        quiz_seeds.append(f"1. What is stated regarding {anchor.lower()}? [[cite:{s['id']} \"{anchor}\"]]")
+        words = txt.split()
+        cand = " ".join(words[:min(7, len(words))]).strip(".,;:?!()[]\"'")
+        quiz_seeds.append(f"1. What is the primary concept covered in this section? — Answer: It details {cand.lower()}. [[cite:{s['id']} \"{cand}\"]]")
 
     return f"## Where\n{where}\n\n## Core claims\n" + "\n".join(claims) + "\n\n## Quiz seeds\n" + "\n".join(quiz_seeds) + "\n"
 
@@ -451,7 +458,8 @@ def cmd_brief(slug, uid, model, factcheck_mode=None, fast_path=None):
             os.unlink(fpath)   # it judged the old brief
         make_brief(d, u, model, force=True, fast_path=fast_path)
 
-    if factcheck_mode:
+    meta = load(d, os.path.join("briefs", f"{uid}.json"))
+    if factcheck_mode or (not meta.get("fast_path") and not os.path.exists(os.path.join(bdir, f"{uid}.factcheck.json"))):
         import factcheck
         strict = (factcheck_mode == "--strict")
         frep = factcheck.check_brief(d, bpath, strict=strict, model=model)
@@ -677,8 +685,12 @@ def mirror(d, slug, prog):
 def cmd_mark(slug, uid, status, score, note):
     if status not in STATUSES:
         sys.exit(f"status must be one of {', '.join(STATUSES)}")
-    if score and not re.fullmatch(r"\d{1,3}/\d{1,3}", score):
-        sys.exit("--score must look like 4/5")
+    if score:
+        if not re.fullmatch(r"\d{1,3}/\d{1,3}", score):
+            sys.exit("--score must look like 4/5")
+        num, den = map(int, score.split("/"))
+        if den == 0 or num > den:
+            sys.exit(f"--score {score} invalid: score cannot exceed total ({num} > {den})")
     d = store_dir(slug)
     if uid not in {u["id"] for u in load(d, "units.json")}:
         sys.exit(f"no unit {uid!r} in {slug}")
@@ -692,8 +704,8 @@ def cmd_mark(slug, uid, status, score, note):
         if note:
             e["note"] = st.clean_meta(note, 200)
 
-        # Spaced review scheduling for done units
-        if status == "done":
+        # Spaced review scheduling for done units (requires --score)
+        if status == "done" and score:
             sched = calculate_review_schedule(e, score)
             e.update(sched)
 
@@ -701,7 +713,7 @@ def cmd_mark(slug, uid, status, score, note):
         mirror(d, slug, prog)
     finally:
         st.funlock(fd)
-    review_info = f" (next review: {e.get('next_due')})" if status == "done" else ""
+    review_info = f" (next review: {e.get('next_due')})" if status == "done" and e.get("next_due") else ""
     print(f"{uid}: {status}" + (f" {score}" if score else "") + review_info)
 
 
@@ -750,8 +762,8 @@ def cmd_review(slug, all_reviews=False):
         for s in due_list:
             bpath = os.path.join(d, "briefs", f"{s['id']}.md")
             if os.path.exists(bpath):
-                txt = open(bpath, encoding="utf-8").read()
-                m = re.search(r"## Quiz seeds\s*\n(.*?)(?=\n##|\Z)", txt, re.S)
+                rendered = sv.render(d, bpath)
+                m = re.search(r"## Quiz seeds\s*\n(.*?)(?=\n##|\Z)", rendered, re.S)
                 if m:
                     print(f"\n### {s['id']} ({s['where']}):")
                     print(m.group(1).strip())

@@ -422,11 +422,11 @@ if want source-teach; then
     bash "$BR" mark bk "$U" done --score 3/4 --note 'kv cache | revisit' >/dev/null 2>&1
     grep -q "| $U | .* | done | 3/4 | kv cache / revisit |" "$D/vault/sources/bk/progress.md" && ok "teach: mark mirrors progress to the vault" || bad "teach: mark mirrors progress to the vault" "$(grep "$U" "$D/vault/sources/bk/progress.md")"
     bash "$BR" units bk | grep -q "^$U | .* | done 3/4 | " && ok "teach: units shows progress" || bad "teach: units shows progress" "$(bash "$BR" units bk | grep "^$U")"
-    o=$(PATH="$D/bin:$PATH" FAKE_CLAUDE=fail bash "$BR" brief bk "$U" 2>&1); rc=$?
+    o=$(PATH="$D/bin:$PATH" FAKE_CLAUDE=fail bash "$BR" brief bk "$U" --no-fast-path 2>&1); rc=$?
     [ $rc != 0 ] && [ ! -f "$S/briefs/$U.md" ] && ok "teach: failed librarian run caches nothing" || bad "teach: failed librarian run caches nothing" "rc=$rc $o"
-    o=$(PATH="$D/bin:$PATH" FAKE_CLAUDE=bad bash "$BR" brief bk "$U" 2>&1); rc=$?
+    o=$(PATH="$D/bin:$PATH" FAKE_CLAUDE=bad bash "$BR" brief bk "$U" --no-fast-path 2>&1); rc=$?
     [ $rc != 0 ] && [ ! -f "$S/briefs/$U.md" ] && ok "teach: unverifiable brief is rejected, not cached" || bad "teach: unverifiable brief is rejected, not cached" "rc=$rc $o"
-    o=$(PATH="$D/bin:$PATH" FAKE_CLAUDE=ok bash "$BR" brief bk "$U" 2>&1); rc=$?
+    o=$(PATH="$D/bin:$PATH" FAKE_CLAUDE=ok bash "$BR" brief bk "$U" --no-fast-path 2>&1); rc=$?
     [ $rc = 0 ] && grep -q "verified" <<<"$o" && grep -qE '\((p\. |PDF p\. )[^:]+: “' <<<"$o" && ! grep -q '\[\[cite:' <<<"$o" \
       && ok "teach: brief verified and rendered with pages" || bad "teach: brief verified and rendered with pages" "rc=$rc $o"
     grep -q "^## Where" <<<"$o" && ok "teach: Where line written by code" || bad "teach: Where line written by code" "$o"

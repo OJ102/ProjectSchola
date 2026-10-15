@@ -96,13 +96,25 @@ const AskUserQuestionParams = Type.Object({
 	),
 });
 
-function shuffleOptions<T>(array: T[]): T[] {
-	const out = [...array];
+function shuffleOptions<T extends { label?: string; value?: string }>(array: T[]): T[] {
+	if (array.length <= 1) return array;
+	const isOptOut = (opt: T) => {
+		const text = `${opt.label || ""} ${opt.value || ""}`.toLowerCase();
+		return (
+			text.includes("haven't encountered") ||
+			text.includes("havent encountered") ||
+			text.includes("not encountered") ||
+			text.includes("none of the above")
+		);
+	};
+	const optOut = array.filter(isOptOut);
+	const substantive = array.filter((o) => !isOptOut(o));
+	const out = [...substantive];
 	for (let i = out.length - 1; i > 0; i--) {
 		const j = Math.floor(Math.random() * (i + 1));
 		[out[i], out[j]] = [out[j], out[i]];
 	}
-	return out;
+	return [...out, ...optOut];
 }
 
 function normalizeOptions(options: Array<{ label: string; value?: string; description?: string }> | undefined): AskOption[] {

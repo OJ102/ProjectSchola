@@ -173,6 +173,24 @@ o("b3 review initial mark sets reps 1", u1.get("reps") == 1, u1)
 o("b3 review initial mark sets interval 1d", u1.get("interval_days") == 1, u1)
 o("b3 review initial mark sets next_due tomorrow", u1.get("next_due") == tomorrow_str, u1)
 
+# Same-day repeated mark does not advance reps or grow interval
+silent_mark(SLUG, "u001", "done", "4/5", "repeated mark on same day")
+prog = sbrief.progress(STORE)
+u1 = prog["units"]["u001"]
+o("b3 review same-day mark keeps reps 1", u1.get("reps") == 1, u1)
+o("b3 review same-day mark keeps interval 1d", u1.get("interval_days") == 1, u1)
+
+# Marking done without --score does not schedule next_due
+silent_mark(SLUG, "u002", "done", None, "no score mark")
+prog = sbrief.progress(STORE)
+u2 = prog["units"]["u002"]
+o("b3 review mark done without score has no next_due", u2.get("next_due") is None, u2)
+
+# Marking done with score > total (e.g. 6/5) is rejected
+rc_bad_score = subprocess.run([sys.executable, os.path.join(HOOKS_DIR, "source", "brief.py"), "mark", SLUG, "u001", "done", "--score", "6/5"],
+                              capture_output=True, text=True)
+o("b3 review mark rejects score > total (6/5)", rc_bad_score.returncode != 0, rc_bad_score.stderr)
+
 # 1b. Vault progress.md mirroring
 vault_prog_path = os.path.join(os.environ["OBSIDIAN_VAULT_PATH"], "sources", SLUG, "progress.md")
 o("b3 review vault progress.md exists", os.path.isfile(vault_prog_path))
@@ -184,6 +202,10 @@ o("b3 review vault progress.md has reviews_due frontmatter", "reviews_due:" in p
 o("b3 review vault progress.md contains Review queue heading", "## Review queue" in prog_md)
 o("b3 review vault progress.md shows unit in review queue", "| u001 |" in prog_md and "1d | 1 | 4/5 |" in prog_md)
 
+# Simulate next review day (last_reviewed in the past)
+prog["units"]["u001"]["last_reviewed"] = (today_d - datetime.timedelta(days=1)).isoformat()
+st.write_json(os.path.join(STORE, "progress.json"), prog)
+
 # 1c. Spaced interval advancement on successful review
 silent_mark(SLUG, "u001", "done", "5/5", "second pass review")
 prog = sbrief.progress(STORE)
@@ -192,6 +214,10 @@ in_3d = (today_d + datetime.timedelta(days=3)).isoformat()
 o("b3 review pass advances reps to 2", u1.get("reps") == 2, u1)
 o("b3 review pass advances interval to 3d", u1.get("interval_days") == 3, u1)
 o("b3 review pass schedules next_due in 3 days", u1.get("next_due") == in_3d, u1)
+
+# Simulate next review day for lapse
+prog["units"]["u001"]["last_reviewed"] = (today_d - datetime.timedelta(days=3)).isoformat()
+st.write_json(os.path.join(STORE, "progress.json"), prog)
 
 # 1d. Lapse / failure resets interval to 1d
 silent_mark(SLUG, "u001", "done", "1/5", "struggled on tricky quiz")
