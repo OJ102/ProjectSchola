@@ -227,6 +227,19 @@ def calculate_review_schedule(old_entry, score, today=None):
     }
 
 
+COMMON_VERBS = {
+    "is", "are", "was", "were", "be", "been", "being",
+    "has", "have", "had",
+    "defines", "defined", "describes", "described", "explains", "explained",
+    "uses", "used", "relies", "relied", "allows", "allowed", "enables", "enabled",
+    "provides", "provided", "consists", "consisted", "involves", "involved",
+    "requires", "required", "shows", "showed", "states", "stated",
+    "computes", "computed", "calculates", "calculated", "measures", "measured",
+    "maps", "mapped", "transforms", "transformed", "represents", "represented",
+    "applies", "applied", "produces", "produced", "generates", "generated",
+}
+
+
 def generate_fast_path_brief(d, u):
     """Generate a valid brief adhering to Decision 17 schema directly from unit spans without LLM."""
     spans = []
@@ -269,8 +282,18 @@ def generate_fast_path_brief(d, u):
                         anchor = cand
                         break
         if anchor:
-            claim_text = f"The source explains the core concepts of {anchor.lower()}."
-            claims.append(f"- {claim_text} [[cite:{s['id']} \"{anchor}\"]]")
+            sentences = [sent.strip() for sent in re.split(r"(?<=[.!?])\s+", txt) if sent.strip()]
+            s0 = sentences[0] if sentences else txt
+            swords = s0.split()
+            if len(swords) > 25:
+                claim_body = " ".join(swords[:25]).rstrip(",;:")
+            else:
+                claim_body = s0.rstrip(",;:")
+            if not claim_body.endswith((".", "!", "?")):
+                claim_body += "."
+            if sv.SELF_LOCATOR.search(claim_body):
+                claim_body = f"The source explains that {anchor.lower()}."
+            claims.append(f"- {claim_body} [[cite:{s['id']} \"{anchor}\"]]")
 
     if not claims:
         return None
@@ -292,8 +315,41 @@ def generate_fast_path_brief(d, u):
                         anchor = cand
                         break
         if anchor:
+            sentences = [sent.strip() for sent in re.split(r"(?<=[.!?])\s+", txt) if sent.strip()]
+            s0 = sentences[0] if sentences else txt
+            s_clean = re.sub(
+                r"^(in this (?:section|chapter|unit|paper)|specifically|furthermore|moreover|in addition|for example|as shown|therefore|however|consequently),\s*",
+                "", s0, flags=re.I
+            ).strip()
+            swords = s_clean.split()
+            v_idx = None
+            for i in range(1, min(7, len(swords))):
+                if swords[i].lower() in COMMON_VERBS:
+                    v_idx = i
+                    break
+            if v_idx:
+                subject = " ".join(swords[:v_idx]).strip(".,;:?!()[]\"'")
+                predicate = " ".join(swords[v_idx:min(len(swords), v_idx + 18)]).strip(".,;:?!()[]\"'")
+            else:
+                split_idx = min(3, max(1, len(swords) // 2))
+                subject = " ".join(swords[:split_idx]).strip(".,;:?!()[]\"'")
+                predicate = " ".join(swords[split_idx:min(len(swords), split_idx + 18)]).strip(".,;:?!()[]\"'")
+
+            if sv.SELF_LOCATOR.search(subject) or sv.SELF_LOCATOR.search(predicate):
+                subject = "the primary concept"
+                predicate = f"details {anchor.lower()}"
+
+            if not predicate.endswith((".", "!", "?")):
+                predicate += "."
+
+            pred_first = predicate.split()[0].lower() if predicate.split() else ""
+            if pred_first in COMMON_VERBS:
+                ans_body = f"It {predicate}"
+            else:
+                ans_body = f"It establishes that {predicate}"
+
             q_num = len(quiz_seeds) + 1
-            quiz_seeds.append(f"{q_num}. What does the source state regarding the concepts covered in this unit? — Answer: It details {anchor.lower()}. [[cite:{s['id']} \"{anchor}\"]]")
+            quiz_seeds.append(f"{q_num}. What does the source establish regarding {subject.lower()}? — Answer: {ans_body} [[cite:{s['id']} \"{anchor}\"]]")
 
     if not quiz_seeds:
         s = candidates[0]

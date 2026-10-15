@@ -436,6 +436,37 @@ except st.DeadlineExceeded as e:
     caught_deadline = True
 o("safety: check_deadline raises DeadlineExceeded when past", caught_deadline)
 
+# 7e. Issue 1 regression: dark-theme white text and CSS background
+o("safety: white text inside container with class is not hidden",
+  not shidden.is_hidden("span", {"style": "color: white"}, ancestors=[("div", {"class": "hero"})]))
+o("safety: white text inside container with id is not hidden",
+  not shidden.is_hidden("span", {"style": "color: white"}, ancestors=[("div", {"id": "dark-theme"})]))
+css_dark = shidden.parse_css(".dark-theme { background-color: #222222; }")
+o("safety: white text with dark CSS rule background is not hidden",
+  not shidden.is_hidden("span", {"style": "color: white"}, rules=css_dark, ancestors=[("div", {"class": "dark-theme"})]))
+css_white = shidden.parse_css(".white-box { background-color: #ffffff; }")
+o("safety: white text with white CSS rule background is hidden",
+  shidden.is_hidden("span", {"style": "color: white"}, rules=css_white, ancestors=[("div", {"class": "white-box"})]))
+
+# 7f. Issue 2 regression: video URLs and media files clean errors
+import ingest as singest
+video_url_err = False
+try:
+    singest.detect("https://www.youtube.com/watch?v=123")
+except singest.StoreError as e:
+    video_url_err = "video URLs are not supported yet" in str(e)
+o("safety: youtube url raises unsupported video URL error", video_url_err)
+
+video_media_err = False
+import tempfile
+with tempfile.NamedTemporaryFile(suffix=".mp4") as tf:
+    try:
+        singest.detect(tf.name)
+    except singest.StoreError as e:
+        video_media_err = "video media files are not supported yet" in str(e)
+o("safety: video media file raises unsupported video media error", video_media_err)
+
 if FAIL_COUNT > 0:
     sys.exit(1)
 sys.exit(0)
+

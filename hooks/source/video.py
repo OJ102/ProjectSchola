@@ -118,6 +118,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
     segments_dict = {}  # seg_id -> list of spans
 
     for start, end, body in cues:
+        st.check_deadline(opts.get("deadline"), "video cue processing")
         # Deduplicate identical consecutive cues from auto-captions
         if spans_data and norm(body) == spans_data[-1]["norm"]:
             continue
@@ -194,6 +195,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
     if outline_data and outline_data[0]["start_span"] is None:
         outline_data[0]["start_span"] = spans_data[0]["id"]
 
+    st.check_deadline(opts.get("deadline"), "video building units")
     units_list, final_outline = sunits.build_units(spans_data, outline_data, {}, segments_summary)
 
     st.write_json(os.path.join(build_dir, "outline.json"), final_outline)

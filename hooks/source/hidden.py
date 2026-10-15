@@ -149,19 +149,35 @@ def _parse_selector(sel):
     return out
 
 
+def _extract_colors(decls):
+    d = re.sub(r"\s+", "", decls.lower()).replace("!important", "")
+    props = {}
+    for part in d.split(";"):
+        if ":" in part:
+            k, v = part.split(":", 1)
+            props[k] = v
+    bg = props.get("background-color", props.get("background"))
+    fg = props.get("color")
+    bg_col = _colour(bg) if bg else None
+    fg_col = _colour(fg) if fg else None
+    return bg_col, fg_col
+
+
 def parse_css(css):
-    """Ordered list of (selector compounds, effect) for rules that hide or show."""
+    """Ordered list of (selector compounds, effect, bg, fg) for rules."""
     css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
     css = _strip_media(_unescape(css))
     rules = []
     for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
-        eff = effect(m.group(2))
-        if eff is None:
+        decls = m.group(2)
+        eff = effect(decls)
+        bg, fg = _extract_colors(decls)
+        if eff is None and bg is None and fg is None:
             continue
         for sel in m.group(1).split(","):
             comp = _parse_selector(sel)
             if comp:
-                rules.append((comp, eff))
+                rules.append((comp, eff, bg, fg))
     return rules
 
 
@@ -229,8 +245,9 @@ def is_hidden(tag, attrs, rules=(), ancestors=()):
             return True
         return False
     result = False
-    for comp, eff in rules:
-        if _selector_matches(comp, tag, attrs, ancestors):
+    for r in rules:
+        comp, eff = r[0], r[1]
+        if eff is not None and _selector_matches(comp, tag, attrs, ancestors):
             result = eff  # later rules win
     if result:
         return True
@@ -239,25 +256,57 @@ def is_hidden(tag, attrs, rules=(), ancestors=()):
     is_sr = SR_ONLY.search(cls) or any(SR_ONLY.search(at.get("class") or "") for _, at in ancestors)
     if not is_sr:
         effective_fg = None
-        for _, at in [(tag, attrs)] + list(reversed(ancestors)):
-            st_val = _unescape(at.get("style") or "")
+        for i, (cur_tag, cur_attrs) in enumerate([(tag, attrs)] + list(reversed(ancestors))):
+            cur_anc = ancestors[:len(ancestors) - i] if i > 0 else ancestors
+            st_val = _unescape(cur_attrs.get("style") or "")
             m_fg = re.search(r"(?:^|;)\s*color\s*:\s*([^;!]+)", st_val, re.I)
             if m_fg:
-                effective_fg = _colour(m_fg.group(1))
+                col = _colour(m_fg.group(1))
+                if col:
+                    effective_fg = col
+                    break
+            rule_fg = None
+            for r in rules:
+                comp = r[0]
+                fg_val = r[3] if len(r) > 3 else None
+                if fg_val and _selector_matches(comp, cur_tag, cur_attrs, cur_anc):
+                    rule_fg = fg_val
+            if rule_fg:
+                effective_fg = rule_fg
                 break
+
         if effective_fg:
             if effective_fg == "transparent":
                 return True
-            effective_bg = "#ffffff"  # default canvas background
-            for _, at in [(tag, attrs)] + list(reversed(ancestors)):
-                st_val = _unescape(at.get("style") or "")
+            effective_bg = None
+            for i, (cur_tag, cur_attrs) in enumerate([(tag, attrs)] + list(reversed(ancestors))):
+                cur_anc = ancestors[:len(ancestors) - i] if i > 0 else ancestors
+                st_val = _unescape(cur_attrs.get("style") or "")
                 m_bg = re.search(r"(?:^|;)\s*(?:background-color|background)\s*:\s*([^;!]+)", st_val, re.I)
                 if m_bg:
                     col = _colour(m_bg.group(1))
                     if col and col != "transparent":
                         effective_bg = col
                         break
-            if effective_fg == effective_bg:
+                rule_bg = None
+                for r in rules:
+                    comp = r[0]
+                    bg_val = r[2] if len(r) > 2 else None
+                    if bg_val and _selector_matches(comp, cur_tag, cur_attrs, cur_anc):
+                        rule_bg = bg_val
+                if rule_bg and rule_bg != "transparent":
+                    effective_bg = rule_bg
+                    break
+
+            if effective_bg is None:
+                # Only assume default white canvas if no element in the hierarchy has a class or id
+                # which could be styled by an external or unparsed stylesheet
+                has_class_or_id = bool(attrs.get("class") or attrs.get("id") or any(at.get("class") or at.get("id") for _, at in ancestors))
+                if not has_class_or_id:
+                    effective_bg = "#ffffff"
+
+            if effective_bg and effective_fg == effective_bg:
                 return True
 
     return False
+

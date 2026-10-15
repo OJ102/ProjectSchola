@@ -251,6 +251,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
     outline_id_idx += 1
 
     for kind, level, text in blocks:
+        st.check_deadline(opts.get("deadline"), "web block parsing")
         if kind == "heading":
             cur_heading = st.clean_meta(text, 120)
             cur_depth = min(3, max(1, level))
@@ -311,6 +312,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
     seg_index = []
 
     for seg_id, s_title, s_spans in segments_data:
+        st.check_deadline(opts.get("deadline"), "web segment writing")
         path = os.path.join(seg_dir, f"{seg_id}.md")
         lines = [f"[{s['id']}] " + s["text"].replace("\n", " ⏎ ") for s in s_spans]
         st.atomic_write(path, ("\n".join(lines) + "\n").encode("utf-8"))
@@ -333,6 +335,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
 
     # 4. Units & Outline Ranges
+    st.check_deadline(opts.get("deadline"), "web building units")
     segments_summary = [(s["id"], s["locator"]) for s in seg_index]
     units_list, final_outline = sunits.build_units(spans_data, outline_data, {}, segments_summary)
 

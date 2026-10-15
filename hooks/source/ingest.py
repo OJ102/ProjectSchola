@@ -110,7 +110,7 @@ def detect(path):
         if u.path.lower().endswith(".pdf"):
             raise StoreError("remote PDF URLs are not supported (download the PDF first)")
         if any(h in u.netloc.lower() for h in ("youtube.com", "youtu.be", "vimeo.com")):
-            return "video_url", 0
+            raise StoreError("video URLs are not supported yet")
         return "web", 0
     if not os.path.exists(path):
         raise StoreError(f"no such file: {path}")
@@ -133,7 +133,7 @@ def detect(path):
     if ext in (".vtt", ".srt"):
         return "video", size
     if ext in (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4a"):
-        return "video_media", size
+        raise StoreError("video media files are not supported yet (use .vtt or .srt caption files)")
     with open(path, "rb") as f:
         head = f.read(1024)
     if b"%PDF-" in head:
@@ -196,13 +196,6 @@ def missing_tools(stype="pdf"):
     if stype == "docx":
         if not shutil.which("pandoc") and not shutil.which("textutil"):
             return {"pandoc": "brew install pandoc"}
-    if stype in ("video_media", "video_url"):
-        tools = {}
-        if not shutil.which("yt-dlp"):
-            tools["yt-dlp"] = "brew install yt-dlp"
-        if not shutil.which("ffmpeg"):
-            tools["ffmpeg"] = "brew install ffmpeg"
-        return tools
     return {}
 
 
@@ -365,9 +358,8 @@ def ingest_locked(st, src, stype, size, opts):
         sha = sha256_file(src, MAX_SOURCE)
     cache = st.cache_dir(sha)
     settings = {"ocr": opts["ocr"], "vision": opts["vision"], "code": code_hash()}
-    content_match = existing and existing.get("sha256") == sha
-    url_match = existing and ("://" in src) and (existing.get("url_sha") == sha or existing.get("origin") == src)
-    if existing and existing.get("status") == "complete" and (content_match or url_match) \
+    content_match = existing and ("://" not in src) and existing.get("sha256") == sha
+    if existing and existing.get("status") == "complete" and content_match \
             and existing.get("ingest_version") == INGEST_VERSION and existing.get("settings") == settings \
             and not opts["rebuild"]:
         try:

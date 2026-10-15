@@ -382,6 +382,7 @@ def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
             })
 
         for href, items in chapter_items:
+            st.check_deadline(opts.get("deadline"), "epub chapter parsing")
             first = True
             for kind, t, page, eid, tag, ids in items:
                 hit = None
@@ -469,6 +470,7 @@ def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
         outline_id_idx += 1
 
         for kind, level, text in blocks:
+            st.check_deadline(opts.get("deadline"), "pandoc block processing")
             if kind == "heading":
                 cur_heading = st.clean_meta(text, 120)
                 para_count = 0
@@ -546,6 +548,7 @@ def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
 
     # Units & Outline
+    st.check_deadline(opts.get("deadline"), "pandoc building units")
     segments_summary = [(s["id"], s["locator"]) for s in seg_index]
     units_list, final_outline = sunits.build_units(spans_data, outline_data, {}, segments_summary)
 
