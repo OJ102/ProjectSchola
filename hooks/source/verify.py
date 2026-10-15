@@ -79,9 +79,24 @@ NEG_PREFIXES = ("un", "in", "im", "ir", "il", "non", "dis", "a")
 SELF_LOCATOR = re.compile(r"\b(?:p|pp|pg|pgs)\.\s*\d+|\b(?:page|pages|pg)\s+\d+|\b\d{1,2}:\d{2}(?::\d{2})?\b", re.I)
 
 
+_SPANS_CACHE = {}
+
+
 def load_spans(store):
-    spans = [json.loads(l) for l in open(os.path.join(store, "spans.jsonl"), encoding="utf-8")]
-    return {s["id"]: s for s in spans}, [s["id"] for s in spans]
+    spans_path = os.path.join(store, "spans.jsonl")
+    try:
+        mtime = os.path.getmtime(spans_path)
+    except OSError:
+        mtime = 0
+    cached = _SPANS_CACHE.get(store)
+    if cached and cached[0] == mtime:
+        return cached[1], cached[2]
+    with open(spans_path, encoding="utf-8") as f:
+        spans = [json.loads(l) for l in f]
+    d = {s["id"]: s for s in spans}
+    order = [s["id"] for s in spans]
+    _SPANS_CACHE[store] = (mtime, d, order)
+    return d, order
 
 
 def _canon(w):

@@ -350,6 +350,7 @@ def convert_docx(path):
 def build(source_path, build_dir, opts=None, cache_dir=None, log=print):
     opts = opts or {}
     os.makedirs(build_dir, exist_ok=True)
+    st.check_deadline(opts.get("deadline"), "pandoc processing")
     ext = os.path.splitext(source_path)[1].lower()
 
     with open(source_path, "rb") as f:

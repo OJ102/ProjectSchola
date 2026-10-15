@@ -73,7 +73,7 @@ def check_host(url):
 def fetch_once(url):
     host, port, ip = check_host(url)
     pin = f"[{ip}]" if ":" in ip else ip
-    cmd = ["curl", "-sS", "--proto", "=http,https", "--proto-redir", "=http,https", "--max-redirs", "0",
+    cmd = ["curl", "-q", "-sS", "--noproxy", "*", "--proto", "=http,https", "--proto-redir", "=http,https", "--max-redirs", "0",
            "--max-time", "30", "--max-filesize", str(MAX_BYTES), "--compressed", "-A", UA,
            "--resolve", f"{host}:{port}:{pin}", "-D", "-", "-o", "-", url]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

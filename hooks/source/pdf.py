@@ -37,6 +37,7 @@ import pagelabels
 import units as unitsmod
 from pdfmini import PDF, PDFError, Ref, text as pdftext
 from srcnorm import LINEBREAK_MARK, neutralize, norm
+import store as st
 from store import clean_meta, write_json
 
 BAND = 0.08          # top/bottom fraction of the page treated as header/footer band
@@ -63,7 +64,7 @@ class AdapterError(Exception):
     pass
 
 
-class DeadlineExceeded(AdapterError):
+class DeadlineExceeded(AdapterError, st.DeadlineExceeded):
     """The ingest wall clock ran out; per-page OCR results are cached, so
     running /ingest again resumes."""
 

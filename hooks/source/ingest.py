@@ -40,6 +40,7 @@ import pandoc_adapter as pandocadapter  # noqa: E402
 import video as videoadapter  # noqa: E402
 import fetch as fetchadapter  # noqa: E402
 import contract  # noqa: E402
+import store as st  # noqa: E402
 from store import (SLUG_RE, Locked, Store, StoreError, check_slug, clean_meta, meta_text, sha256_file,  # noqa: E402
                    slugify, sources_root, update_vault, vault_root, write_json)
 
@@ -370,7 +371,8 @@ def ingest_locked(st, src, stype, size, opts):
             and existing.get("ingest_version") == INGEST_VERSION and existing.get("settings") == settings \
             and not opts["rebuild"]:
         try:
-            rep = json.load(open(st.path("report.json")))
+            with open(st.path("report.json"), "r", encoding="utf-8") as f:
+                rep = json.load(f)
         except (OSError, ValueError):
             rep = None
         # a run whose OCR partly failed is resumed, not reported as up to date
@@ -408,7 +410,8 @@ def ingest_locked(st, src, stype, size, opts):
         adapter_name = "pdf"
     elif stype == "web":
         rep = webadapter.build(src, build, opts, cache, log=lambda m: print(m, file=sys.stderr))
-        s_meta = json.load(open(os.path.join(build, "source.json")))
+        with open(os.path.join(build, "source.json"), "r", encoding="utf-8") as f:
+            s_meta = json.load(f)
         title = s_meta.get("title") or st.slug
         author = ""
         published = ""
@@ -416,7 +419,8 @@ def ingest_locked(st, src, stype, size, opts):
         adapter_name = "web"
     elif stype in ("epub", "markdown", "notebook", "docx"):
         rep = pandocadapter.build(src, build, opts, cache, log=lambda m: print(m, file=sys.stderr))
-        s_meta = json.load(open(os.path.join(build, "source.json")))
+        with open(os.path.join(build, "source.json"), "r", encoding="utf-8") as f:
+            s_meta = json.load(f)
         title = s_meta.get("title") or st.slug
         author = ""
         published = ""
@@ -424,7 +428,8 @@ def ingest_locked(st, src, stype, size, opts):
         adapter_name = "pandoc"
     elif stype == "video":
         rep = videoadapter.build(src, build, opts, cache, log=lambda m: print(m, file=sys.stderr))
-        s_meta = json.load(open(os.path.join(build, "source.json")))
+        with open(os.path.join(build, "source.json"), "r", encoding="utf-8") as f:
+            s_meta = json.load(f)
         title = s_meta.get("title") or st.slug
         author = ""
         published = ""
@@ -508,12 +513,16 @@ def ingest_locked(st, src, stype, size, opts):
     rep["warnings"] = warnings
     write_json(os.path.join(build, "report.json"), dict(rep, source=meta))
 
+    # span-id migration survives a crash mid-commit: the old spans and hash
+    # are parked in .migrate/ before anything is replaced, and removed only
+    # after the migration is written
     pending = st.pending_migration()
     if pending is None and existing and existing.get("sha256") and existing.get("sha256") != sha \
             and os.path.isfile(st.path("spans.jsonl")):
         st.park_migration(existing)
         pending = st.pending_migration()
-    new_spans = [json.loads(l) for l in open(os.path.join(build, "spans.jsonl"), encoding="utf-8")]
+    with open(os.path.join(build, "spans.jsonl"), "r", encoding="utf-8") as f:
+        new_spans = [json.loads(l) for l in f]
     incomplete = bool((rep.get("ocr") or {}).get("failed_pages"))
     st.commit(build, meta, status="incomplete" if incomplete else "complete")
     if pending is not None and pending[1] != sha:
@@ -583,7 +592,7 @@ def main():
     except ContractFailed as e:
         print(f"ingest: {e}", file=sys.stderr)
         sys.exit(7)
-    except pdfadapter.DeadlineExceeded as e:
+    except (pdfadapter.DeadlineExceeded, st.DeadlineExceeded) as e:
         print(f"ingest: {e} (time limit {ingest_timeout():.0f}s; run /ingest again to resume)", file=sys.stderr)
         sys.exit(6)
     except (StoreError, pdfadapter.AdapterError, webadapter.WebParseError,

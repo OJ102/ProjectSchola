@@ -73,13 +73,14 @@ class HTMLBlockExtractor(HTMLParser):
             self.in_title = True
             self.title_ok = not self.suppressed() and not self.title.strip() and not self.in_body
             return
-        if tag not in ("html", "head", "meta", "link", "base", "style", "script", "noscript"):
+        if tag not in ("html", "head", "meta", "link", "base", "style", "script", "noscript", "template"):
             self.in_body = True
         self.implied_end(tag)
         if tag in VOID:   # never closed: pushing one would hide (or swallow) the rest of the page
             self.handle_startendtag(tag, attrs)
             return
-        hide = tag in ("script", "style", "noscript", "svg", "nav", "footer", "header") or \
+        hide = tag in ("script", "style", "noscript", "svg", "nav", "footer", "header", "template", "textarea") or \
+               (tag == "dialog" and "open" not in a) or \
                is_hidden(tag, a, self.rules, [(t, at) for t, _, at in self.stack])
         self.stack.append([tag, hide, a])
         if self.suppressed():
@@ -203,6 +204,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
     """Build the standard store files for a web source."""
     opts = opts or {}
     os.makedirs(build_dir, exist_ok=True)
+    st.check_deadline(opts.get("deadline"), "web fetch")
 
     is_url = "://" in source_path_or_url
     if is_url:
@@ -219,6 +221,7 @@ def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
         sha = hashlib.sha256(body_bytes).hexdigest()
         etag = None
 
+    st.check_deadline(opts.get("deadline"), "web parsing")
     title, blocks = extract_html_content(html_text, origin)
     title = st.clean_meta(title, 120)
 

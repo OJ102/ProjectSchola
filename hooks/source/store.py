@@ -50,6 +50,15 @@ class Locked(StoreError):
     pass
 
 
+class DeadlineExceeded(StoreError):
+    pass
+
+
+def check_deadline(deadline, stage="ingest"):
+    if deadline and time.monotonic() > deadline:
+        raise DeadlineExceeded(f"the ingest time limit ran out during {stage}")
+
+
 def sources_root():
     raw = os.environ.get("SCHOLA_SOURCES_DIR") or os.path.join(os.path.expanduser("~"), ".local", "share",
                                                                  "schola", "sources")

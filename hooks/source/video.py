@@ -95,6 +95,7 @@ def parse_vtt_or_srt(text):
 def build(source_path_or_url, build_dir, opts=None, cache_dir=None, log=print):
     opts = opts or {}
     os.makedirs(build_dir, exist_ok=True)
+    st.check_deadline(opts.get("deadline"), "video processing")
     video_url = opts.get("url")
 
     if os.path.exists(source_path_or_url):

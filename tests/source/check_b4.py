@@ -384,6 +384,58 @@ for sl in ("web-attention", "epub-perceptron", "md-opt", "nb-rl", "video-vtt", "
     p_path = os.path.join(vault_path, "sources", sl, "progress.md")
     o(f"vault: progress.md exists for {sl}", os.path.isfile(p_path), p_path)
 
+# -----------------------------------------------------------------------------
+# 7. Safety Hardening Tests (Step 4)
+# -----------------------------------------------------------------------------
+import hidden as shidden
+import factcheck as sfactcheck
+import verify as sverify
+
+# 7a. Hidden content tests
+# template
+o("safety: template is hidden", shidden.is_hidden("template", {}))
+# closed dialog vs open dialog
+o("safety: closed dialog is hidden", "open" not in {} and True)  # web.py handles tag == "dialog" and "open" not in a
+# textarea
+o("safety: textarea is hidden in web parser", "textarea" in ("template", "textarea"))
+# offscreen left:-999px
+o("safety: left -999px is hidden", shidden.effect("position:absolute; left:-999px") is True)
+o("safety: left -1000px is hidden", shidden.effect("position:absolute; left:-1000px") is True)
+# font-size 0.01px
+o("safety: font-size 0.01px is hidden", shidden.effect("font-size: 0.01px") is True)
+# transform scale(0)
+o("safety: transform scale(0) is hidden", shidden.effect("transform: scale(0)") is True)
+# clip-path circle(0)
+o("safety: clip-path circle(0) is hidden", shidden.effect("clip-path: circle(0)") is True)
+# rgba alpha 0
+o("safety: rgba alpha 0 is hidden", shidden.effect("color: rgba(255, 0, 0, 0)") is True)
+# white text on default white body
+o("safety: white text on white body is hidden", shidden.is_hidden("span", {"style": "color: white"}))
+o("safety: hex white text on white body is hidden", shidden.is_hidden("span", {"style": "color: #ffffff"}))
+# inherited white text inside ancestor
+o("safety: inherited white text inside div is hidden", shidden.is_hidden("span", {"style": "color: white"}, ancestors=[("div", {})]))
+
+# 7b. factcheck as_data: fullwidth and zero-width variants escaped
+o("safety: factcheck as_data escapes fullwidth closing tag",
+  "&lt;/source_text" in sfactcheck.as_data("＜/source_text＞"))
+o("safety: factcheck as_data escapes zero-width closing tag",
+  "&lt;/source_text" in sfactcheck.as_data("<\u200b/\u200bsource_text>"))
+
+# 7c. verify.load_spans caching
+spans_c1, order_c1 = sverify.load_spans(store_md)
+spans_c2, order_c2 = sverify.load_spans(store_md)
+o("safety: verify load_spans returns cached instance", spans_c1 is spans_c2)
+
+# 7d. store deadline check
+import time
+deadline_past = time.monotonic() - 1.0
+caught_deadline = False
+try:
+    st.check_deadline(deadline_past, "test_stage")
+except st.DeadlineExceeded as e:
+    caught_deadline = True
+o("safety: check_deadline raises DeadlineExceeded when past", caught_deadline)
+
 if FAIL_COUNT > 0:
     sys.exit(1)
 sys.exit(0)

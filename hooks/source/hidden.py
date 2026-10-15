@@ -26,14 +26,16 @@ def _colour(v):
     v = v.strip()
     if v in NAMED:
         return NAMED[v]
-    m = re.fullmatch(r"#([0-9a-f]{3})", v)
+    m = re.fullmatch(r"#([0-9a-f]{3})", v, re.I)
     if m:
-        return "#" + "".join(c * 2 for c in m.group(1))
-    if re.fullmatch(r"#[0-9a-f]{6}", v):
-        return v
-    m = re.fullmatch(r"rgba?\((\d+),(\d+),(\d+)(?:,[\d.]+)?\)", v)
+        return "#" + "".join(c * 2 for c in m.group(1)).lower()
+    if re.fullmatch(r"#[0-9a-f]{6}", v, re.I):
+        return v.lower()
+    m = re.fullmatch(r"rgba?\((\d+),(\d+),(\d+)(?:,\s*([\d.]+))?\)", v, re.I)
     if m:
-        return "#%02x%02x%02x" % tuple(int(x) for x in m.groups())
+        if m.group(4) is not None and float(m.group(4)) == 0.0:
+            return "transparent"
+        return "#%02x%02x%02x" % tuple(int(x) for x in m.groups()[:3])
     return None
 
 
@@ -49,21 +51,42 @@ def effect(decls, cls=""):
     hide = False
     if props.get("display") == "none" or props.get("visibility") in ("hidden", "collapse"):
         hide = True
-    if re.fullmatch(r"0(\.0+)?(px|pt|em|rem|%)?", props.get("font-size", "x")):
+    fs = props.get("font-size", "")
+    m_fs = re.fullmatch(r"(\d+(?:\.\d+)?)(px|pt|em|rem|vw|vh|%)?", fs)
+    if m_fs and float(m_fs.group(1)) <= 0.1:
         hide = True
     if re.fullmatch(r"0(\.0+)?", props.get("opacity", "x")):
         hide = True
-    if props.get("color") == "transparent":
+    col = props.get("color", "")
+    if col == "transparent" or _colour(col) == "transparent":
         hide = True
-    if props.get("overflow") == "hidden" and any(re.fullmatch(r"0(\.0+)?(px|em|rem|%)?", props.get(k, "x"))
-                                                 for k in ("height", "width", "max-height", "max-width")):
+    if props.get("overflow") in ("hidden", "clip") and any(
+        (m := re.fullmatch(r"(\d+(?:\.\d+)?)(px|pt|em|rem|vw|vh|%)?", props.get(k, "x"))) and float(m.group(1)) <= 0.1
+        for k in ("height", "width", "max-height", "max-width")
+    ):
         hide = True
     fg, bg = props.get("color"), props.get("background-color", props.get("background"))
     if fg and bg and _colour(fg) and _colour(fg) == _colour(bg):
         hide = True
-    if not SR_ONLY.search(cls) and any(re.fullmatch(r"-\d{4,}(px|em)?", props.get(k, "")) for k in
-                                       ("left", "top", "text-indent", "margin-left")):
-        hide = True
+    if not SR_ONLY.search(cls):
+        tf = props.get("transform", "")
+        if tf and re.search(r"scale(?:3d|[xy])?\(\s*0(?:\.0+)?(?:\s*,|\s*\))", tf):
+            hide = True
+        cp = props.get("clip-path", "")
+        if cp and re.search(r"circle\(\s*0|inset\(\s*(?:100%|50%)\s*\)|polygon\(\s*0\s+0(?:\s*,\s*0\s+0)*\s*\)", cp):
+            hide = True
+        for k in ("left", "top", "text-indent", "margin-left"):
+            val = props.get(k, "")
+            m = re.fullmatch(r"-(\d+)(px|pt|em|rem|vw|vh|%)?", val)
+            if m:
+                num = int(m.group(1))
+                unit = m.group(2) or "px"
+                if unit in ("em", "rem") and num >= 50:
+                    hide = True
+                elif unit in ("vw", "vh", "%") and num >= 100:
+                    hide = True
+                elif num >= 999:
+                    hide = True
     if hide:
         return True
     if ("display" in props) or props.get("visibility") == "visible":
@@ -193,14 +216,48 @@ def is_hidden(tag, attrs, rules=(), ancestors=()):
         return True
     if (attrs.get("aria-hidden") or "").strip().lower() == "true":
         return True
+    if tag in ("template", "textarea"):
+        return True
+    if tag == "dialog" and "open" not in attrs:
+        return True
     if tag == "input" and (attrs.get("type") or "").lower() == "hidden":
         return True
     cls = attrs.get("class") or ""
     inline = effect(_unescape(attrs.get("style") or ""), cls)
     if inline is not None:
-        return inline
+        if inline:
+            return True
+        return False
     result = False
     for comp, eff in rules:
         if _selector_matches(comp, tag, attrs, ancestors):
             result = eff  # later rules win
-    return result
+    if result:
+        return True
+
+    # Check inherited / default white or same-color text
+    is_sr = SR_ONLY.search(cls) or any(SR_ONLY.search(at.get("class") or "") for _, at in ancestors)
+    if not is_sr:
+        effective_fg = None
+        for _, at in [(tag, attrs)] + list(reversed(ancestors)):
+            st_val = _unescape(at.get("style") or "")
+            m_fg = re.search(r"(?:^|;)\s*color\s*:\s*([^;!]+)", st_val, re.I)
+            if m_fg:
+                effective_fg = _colour(m_fg.group(1))
+                break
+        if effective_fg:
+            if effective_fg == "transparent":
+                return True
+            effective_bg = "#ffffff"  # default canvas background
+            for _, at in [(tag, attrs)] + list(reversed(ancestors)):
+                st_val = _unescape(at.get("style") or "")
+                m_bg = re.search(r"(?:^|;)\s*(?:background-color|background)\s*:\s*([^;!]+)", st_val, re.I)
+                if m_bg:
+                    col = _colour(m_bg.group(1))
+                    if col and col != "transparent":
+                        effective_bg = col
+                        break
+            if effective_fg == effective_bg:
+                return True
+
+    return False
