@@ -371,6 +371,12 @@ QUOTE_CASES = {
     "cite_inside_unclosed_quote": ('Quote: "the moon alone causes every tide [[cite:p0010.1]]".', False),
     "cite_inside_real_quote": ('Quote: "driven by the gravitational pull of the moon [[cite:p0010.1]]".', True),
     "pi_pf_quote_mark": ("⸌the moon alone causes every tide⸍ [[cite:p0010.1]]", False),
+    "quote_on_next_line": ('As the book says [[cite:p0010.1]]:\n"the moon alone causes every tide"', False),
+    "quote_on_next_line_then_cite": ('As the book says [[cite:p0010.1]]:\n"the moon alone causes every tide"\nThen [[cite:p0011.1]].', False),
+    "html_entity_quote": ("&quot;the moon alone causes every tide&quot; [[cite:p0010.1]]", False),
+    "html_q_tag": ("<q>the moon alone causes every tide</q> [[cite:p0010.1]]", False),
+    "html_entity_real": ("&ldquo;driven by the gravitational pull of the moon&rdquo; [[cite:p0010.1]]", True),
+    "next_paragraph_not_owned": ('Tides [[cite:p0010.1]].\n\nSome say "the moon alone causes every tide".', True),
     "german_real": ("„driven by the gravitational pull of the moon“ [[cite:p0010.1]]", True),
     "removed_cite_then_unrelated_cite": ('"the moon alone causes every tide" [[cite:p9999.9]] and later tides [[cite:p0010.1]].', True),
 }

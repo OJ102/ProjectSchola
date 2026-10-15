@@ -58,19 +58,38 @@ def quoted_runs(text, lo, hi, keep=lambda a, b: True):
     return out
 
 
-def quotes_near(text, masked, m, floor):
-    """Every quoted run a cite token covers, found in `masked` (the text with every cite token
-    blanked, so a quote around the token, "… [[cite:x]]", still pairs up): runs that start before
-    the token, from the end of the last cite that rendered (or the paragraph start); and runs after
-    it, to the end of the line, when no other cite follows on that line (a quote between two cites
-    belongs to the next one)."""
+def quotes_near(text, masked, m, floor, prev_end):
+    """Every quoted run a cite token covers, found in `masked` (cite tokens blanked, so a quote around
+    one still pairs). Before the token: runs from the end of the last cite that rendered (or the
+    paragraph start). After it: runs to the paragraph end. Runs between two cites go to the next cite
+    when on its line, to the earlier cite when on its line or a line of their own, to both when they
+    span a line break."""
     start, end = m.start(), m.end()
     lo = max(floor, text.rfind("\n\n", 0, start) + 1)
-    pend = text.find("\n", end)
+    split = text.rfind("\n", max(lo, prev_end), start) if prev_end >= lo else -1
+    pend = text.find("\n\n", end)
     pend = len(text) if pend == -1 else pend
     nxt = TUTOR_CITE.search(text, end, pend)
-    hi = nxt.start() if nxt else pend
-    return quoted_runs(masked, lo, hi, keep=lambda a, b: a < start or not nxt)
+    nsplit = (text.rfind("\n", end, nxt.start()) if nxt else pend)
+
+    def keep(a, b):
+        if a < start:                       # before the token, or around it
+            return split == -1 or b > split
+        return nsplit != -1 and a < nsplit  # after it
+
+    return quoted_runs(masked, lo, nxt.start() if nxt else pend, keep)
+
+
+# Markup Obsidian renders as a double quote: HTML entities and <q>…</q>.
+QUOTE_MARKUP = re.compile(r"&(?:quot|ldquo|rdquo|bdquo|laquo|raquo|#0*(?:34|171|187|822[0-2])|#x0*(?:22|ab|bb|201[cde]));"
+                          r"|</?q(?:\s[^<>]*)?>", re.I)
+
+
+def mask(text):
+    """Same length as text: cite tokens blanked (so a quote around one still pairs), and quote
+    markup turned into a '"' padded with spaces (so positions stay the same)."""
+    t = TUTOR_CITE.sub(lambda c: " " * len(c.group(0)), text)
+    return QUOTE_MARKUP.sub(lambda c: '"' + " " * (len(c.group(0)) - 1), t)
 
 
 def quote_in(q, span_text):
@@ -94,7 +113,7 @@ def check_reply(text, spans, order, allowed, store):
     # floor: where the quotes a cite covers start, normally the end of the previous cite. A removed
     # cite's quotes carry over to a cite right next to it ("q" [[cite:bad]][[cite:good]]).
     floor, prev = [0], [None]   # prev: (end, removed, floor it used)
-    masked = TUTOR_CITE.sub(lambda c: " " * len(c.group(0)), text)
+    masked = mask(text)
 
     def sub(m):
         if prev[0]:
@@ -120,7 +139,7 @@ def check_reply(text, spans, order, allowed, store):
                     "problem": f"forged anchor: {why}",
                 }))
                 return "(citation removed)"
-        quotes = quotes_near(text, masked, m, floor[0])
+        quotes = quotes_near(text, masked, m, floor[0], prev[0][0] if prev[0] else 0)
         bad = [q for q in quotes if not quote_in(q, spans[sid]["text"])]
         if bad:
             # Re-point ONLY to a span in allowed that holds every one of the quotes
