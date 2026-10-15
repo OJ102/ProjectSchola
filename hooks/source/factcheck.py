@@ -70,8 +70,9 @@ FENCE = re.compile(r"^\s*```[A-Za-z]*\s*\n?(.*?)\n?\s*```\s*$", re.S)
 
 
 def as_data(text):
-    """Source text goes in a <source_text> block; a closing tag inside it cannot end the block."""
-    return re.sub(r"(?i)</?\s*source_text", lambda m: m.group(0).replace("<", "&lt;"), text)
+    """Source text goes in a <source_text> block; no tag inside it (any case or spacing, e.g.
+    "< /SOURCE_TEXT>") can end that block or open a <statement>."""
+    return re.sub(r"(?i)<(\s*/?\s*(?:source_text|statement))", r"&lt;\1", text)
 
 
 def parse_verdict(result):
