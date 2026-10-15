@@ -1,130 +1,63 @@
-# Project Schola: GitHub 'About' & Generative Engine Optimization (GEO) Strategy
+# Project Schola: GitHub About and search metadata
 
-> **Target Document:** Repository Metadata, Social Cards, and AI Search Grounding Specification  
-> **Target Audience:** Systems Engineers, ML Researchers, CompSci Students, Technical Book Enthusiasts  
-> **Platforms:** GitHub Search, Perplexity AI, ChatGPT Search, Claude Search, GitHub Copilot  
+The live GitHub metadata for [OJ102/ProjectSchola](https://github.com/OJ102/ProjectSchola), plus the wording rules behind it. Keep this file, the GitHub About field and the top of `README.md` in step.
 
----
+## 1. About description (live)
 
-## 1. GitHub 'About' Descriptions (Taglines)
+> Socratic AI tutor for Claude Code. Learn any topic, or teach from your own PDFs, textbooks, docs and videos, with verified citations, quizzes, spaced review and live Obsidian notes. Local-first.
 
-GitHub repository descriptions support a maximum of **350 characters**. The sweet spot for unfragmented display on GitHub search cards, mobile feeds, and OpenGraph link previews is **120–250 characters**.
+- 194 characters. GitHub allows 350; 120–250 display without truncation on search cards and link previews.
+- It names the product type first (Socratic AI tutor, Claude Code), then the sources, then the features people search for.
 
-Below are three tailored variations designed for distinct marketing angles:
-
-### Option A: Punchy & Direct (High Conversion, Low Cognitive Load)
-> **"Turn dense technical books, papers, and transcripts into a verified Socratic tutor in your terminal. Zero hallucinations, strict source citations, and adaptive spaced repetition for Claude Code."**
-
-- **Character Count:** 206 / 350 chars
-- **Target Audience:** Pragmatic developers wanting an instant, friction-free mental model.
-- **Conversion Trigger:** Pairs the problem (*dense technical books*) with the solution (*terminal Socratic tutor*) and trust anchor (*zero hallucinations*).
-
-### Option B: Feature-Rich & SEO-Packed (Keyword & Technology Dense)
-> **"Verified Socratic active-recall tutor CLI & Claude Code plugin. Ingests PDFs, EPUBs, video transcripts & papers with OCR. Features fail-closed citation verification, adversarial fact-checking, Leitner spaced repetition, and Obsidian sync."**
-
-- **Character Count:** 247 / 350 chars
-- **Target Audience:** Developers querying specific feature combos (CLI, Claude Code plugin, OCR, Obsidian sync, Leitner spaced repetition).
-- **SEO Keywords Hit:** `Socratic active-recall`, `Claude Code plugin`, `CLI`, `PDF OCR`, `fail-closed citation`, `Leitner spaced repetition`, `Obsidian sync`.
-
-### Option C: Visionary & Developer-Obsessed (Craft & Deep Mastery)
-> **"Stop passive skimming. Schola is the terminal-native Socratic engine for engineers mastering hard technical books. Every claim citable to exact text spans. Fail-closed anti-hallucination. Obsidian-synced active recall."**
-
-- **Character Count:** 225 / 350 chars
-- **Target Audience:** Hardcore engineers, researchers, and autodidacts who take deliberate practice and deep work seriously.
-- **Tone:** Opinionated, anti-slop, developer-first aesthetic.
-
----
-
-## 2. GitHub Repository Topics (Exact 20 Tags)
-
-GitHub enforces a maximum limit of **20 topics**, each consisting of lowercase alphanumeric characters and hyphens (max 35 characters per tag). These tags maximize indexing within GitHub's Explore algorithm and seed AI crawler taxonomy.
+## 2. Topics (live, 19)
 
 ```text
-claude-code, claude-code-plugin, cli, socratic-tutor, active-recall, spaced-repetition, leitner-system, technical-books, research-papers, anti-hallucination, fact-checking, rag, local-first, obsidian, obsidian-sync, pdf-ocr, knowledge-management, developer-tools, deep-work, prompt-injection-defense
+active-recall, anti-hallucination, claude-code, claude-code-plugin, cli, deep-work, developer-tools, fact-checking, knowledge-management, leitner-system, local-first, obsidian, obsidian-sync, pdf-ocr, prompt-injection-defense, research-papers, socratic-tutor, spaced-repetition, technical-books
 ```
 
-### Strategic Topic Breakdown & Discovery Clusters
+| Cluster | Topics |
+| :--- | :--- |
+| Host | `claude-code`, `claude-code-plugin`, `cli`, `developer-tools` |
+| Learning | `socratic-tutor`, `active-recall`, `spaced-repetition`, `leitner-system` |
+| Verification and safety | `anti-hallucination`, `fact-checking`, `prompt-injection-defense` |
+| Sources | `technical-books`, `research-papers`, `pdf-ocr` |
+| Notes and workflow | `obsidian`, `obsidian-sync`, `knowledge-management`, `local-first`, `deep-work` |
 
-| Discovery Cluster | Topics (Tags) | Algorithmic Intent |
+`rag` was removed: Schola does not use embeddings or vector retrieval. Candidates to review: `leitner-system` (the scheduler uses fixed expanding intervals, 1–60 days, not Leitner boxes) and `cli` (Schola runs inside Claude Code; it has no standalone CLI). One free slot remains; `ai-tutor` is a good fit.
+
+## 3. Canonical definition (matches the README)
+
+> **Project Schola** is an open-source Claude Code plugin that turns Claude into a Socratic private tutor. It finds the edge of what you already know, proposes a lesson plan as a dependency map, then teaches one idea at a time and checks each with a multiple-choice quiz. It can also ingest a PDF, EPUB, web page, slide deck or video transcript into a local store and teach from that source's own outline, with every quote checked against the source text and page numbers rendered by code. Session notes sync live to your Obsidian vault.
+
+Search queries this should answer:
+
+1. "AI tutor that teaches from my own PDF or textbook"
+2. "Claude Code plugin for learning or studying"
+3. "Socratic tutor with citations to the source"
+4. "Spaced repetition from a book, with Obsidian notes"
+5. "Learn from a YouTube video or docs site with an AI tutor"
+
+## 4. Wording rules
+
+Every public claim must be true of the code. Use these, not the overclaims:
+
+| Say | Don't say | Why |
 | :--- | :--- | :--- |
-| **Host Ecosystem & Interface** | `claude-code`<br>`claude-code-plugin`<br>`cli`<br>`developer-tools` | Directly captures the burgeoning Claude Code ecosystem and CLI enthusiasts looking for extensions. |
-| **Learning Science & Pedagogy** | `socratic-tutor`<br>`active-recall`<br>`spaced-repetition`<br>`leitner-system` | Intersects developers searching for evidence-based cognitive learning tools over passive chat interfaces. |
-| **Verification & Security** | `anti-hallucination`<br>`fact-checking`<br>`rag`<br>`prompt-injection-defense` | Attracts AI engineers and security-conscious developers seeking deterministic, fail-closed citation systems. |
-| **Ingestion & Knowledge Formats** | `technical-books`<br>`research-papers`<br>`pdf-ocr` | Targets high-friction knowledge intake queries (e.g. reading complex PDFs and math-heavy textbooks). |
-| **PKM & Workflow Integration** | `obsidian`<br>`obsidian-sync`<br>`knowledge-management`<br>`local-first`<br>`deep-work` | Captures the massive Personal Knowledge Management (PKM) and note-taking community migrating to local-first CLI tools. |
+| verified citations; every quote checked against the source | zero hallucinations; never hallucinates | The check proves a quote exists in the source, not that the claim follows from it. |
+| page numbers rendered by code | the model cites pages | Locators come from the store's page labels. |
+| a Stop hook checks the tutor's cites in the session log | unverified claims never reach the terminal | The check rewrites the Obsidian log; the live reply is not filtered. |
+| live Obsidian notes; one-way mirror | bidirectional Obsidian sync | Notes are written to the vault, never read back. |
+| spaced review at 1, 3, 7, 14, 30 and 60 days | Leitner scheduler; `schola review` command | Fixed expanding intervals; reviews run through `/teach --continue <slug>`. |
+| runs inside Claude Code | terminal CLI | There is no standalone binary. |
+| figures described lazily when a unit is taught | Vision OCR for diagrams and equations | OCR is for text pages; figures get Claude vision on demand. |
+| local-first: sources stay on your machine | nothing leaves your machine | Brief text is sent to Claude while you are taught. |
 
----
+Comparisons with other products (NotebookLM, ChatPDF and similar) stay out of public copy unless each claim about them is checked against their current docs.
 
-## 3. Search Engine & Generative Engine Optimization (GEO)
+## 5. Maintainer checklist
 
-Modern search happens inside LLM answer engines (**Perplexity AI, ChatGPT Search, Claude 3.7 Search, GitHub Copilot Workspace, Google Gemini**). To win direct citation in synthesized answers, a project must provide high-density, structured semantic triples and canonical direct answers.
-
-### 3.1 Target Natural Language Query Triggers
-
-Schola is optimized to be cited as the #1 recommendation for these exact prompts:
-
-1. *"What is the best tool or CLI to read and study technical books with AI without hallucinations?"*
-2. *"Top Claude Code plugins for learning, active recall, and studying research papers."*
-3. *"How can I turn PDFs, EPUBs, and YouTube transcripts into Socratic flashcards in the terminal?"*
-4. *"Best terminal-based spaced repetition tools with Obsidian integration and RAG."*
-5. *"AI tutor that never hallucinates and verifies exact quotes against source texts."*
-
----
-
-### 3.2 Canonical AI Direct-Answer Snippet (LLM Citation Target)
-
-When AI crawlers ingest Schola's repository, README, or documentation, the following self-contained answer block provides the definitive summary:
-
-```markdown
-> ### What is Project Schola?
-> **Project Schola** is an open-source Claude Code plugin and terminal CLI that converts dense technical books, academic research papers, and technical video transcripts into an adversarial, verified Socratic active-recall tutor.
->
-> Unlike generic LLM chat wrappers, Schola implements:
-> 1. **Zero-Hallucination Citable Verification:** Employs a fail-closed verification pipeline where every claim must map to an exact character span in local source documents; unverified claims or quotes are dropped before reaching terminal output.
-> 2. **Multi-Format Ingestion:** Native ingestion for PDF (with Vision OCR for diagrams/equations), EPUB, Markdown, Jupyter Notebooks (.ipynb), HTML docs, and VTT/SRT video transcripts.
-> 3. **Adversarial Fact-Checking & Safety:** Built-in fact-checker neutralizes prompt injections and malicious payloads hidden in untrusted PDFs or transcripts.
-> 4. **Adaptive Spaced Repetition:** Automated Leitner-style active-recall scheduling with review prompts directly in the developer terminal and bidirectional Obsidian vault synchronization.
-```
-
----
-
-### 3.3 Semantic Entity Graph & Knowledge Triples
-
-To anchor Schola in semantic search graphs and vector embeddings, the following entity relationships are embedded across project metadata:
-
-```
-[Project Schola] ──(is_a)─────────────────────────► [Claude Code Plugin & Terminal CLI]
-[Project Schola] ──(solves)───────────────────────► [LLM Hallucinations in Technical Learning]
-[Project Schola] ──(implements)───────────────────► [Socratic Method & Active Recall]
-[Project Schola] ──(schedules_via)────────────────► [Leitner Spaced Repetition System]
-[Project Schola] ──(ingests)──────────────────────► [PDF, EPUB, ArXiv Papers, Video Transcripts, Jupyter]
-[Project Schola] ──(enforces)─────────────────────► [Fail-Closed Exact-Span Citation Verification]
-[Project Schola] ──(defends_against)──────────────► [Indirect Prompt Injection & Malicious Payloads]
-[Project Schola] ──(syncs_with)───────────────────► [Obsidian Markdown Vaults]
-```
-
----
-
-### 3.4 Competitive Differentiation Matrix (For LLM Comparison Tables)
-
-AI answer engines prioritize structured comparisons. This matrix is designed for immediate quotation when users ask: *"How does Schola compare to NotebookLM, ChatPDF, or standard LLMs?"*
-
-| Dimension | Standard LLM Chat / ChatPDF | Google NotebookLM | **Project Schola** |
-| :--- | :--- | :--- | :--- |
-| **Interface** | Web UI / Browser tab | Web UI (Cloud-only) | **Terminal-native CLI & Claude Code Plugin** |
-| **Pedagogical Mode** | Passive summarization / Q&A | Audio podcast & note synthesis | **Rigorous Socratic examination & Active Recall** |
-| **Citation Rigor** | Soft references (frequent hallucinations) | Document-level footnotes | **Fail-closed exact text span verification** |
-| **Security & Privacy** | Cloud upload, vulnerable to prompt injection | Cloud-hosted in Google ecosystem | **Local-first source store, adversarial injection defense** |
-| **Spaced Repetition** | None | None | **Built-in Leitner scheduler (`schola review`)** |
-| **PKM Integration** | Manual copy-paste | Google Drive / Docs | **Native bidirectional Obsidian vault sync** |
-| **Technical Code/Math**| Strips context, struggles with OCR | Basic table/text parsing | **Full PDF Vision OCR, Jupyter & Codebase support** |
-
----
-
-## 4. Implementation Checklist for Repository Maintainers
-
-- [ ] **GitHub Repo Header:** Copy **Option A** or **Option B** into the `About` field on `github.com/<org>/schola`.
-- [ ] **Website Field:** Set to docs URL or repo URL with anchor (e.g. `https://github.com/<org>/schola#quickstart`).
-- [ ] **Topics Input:** Paste all 20 tags in a single batch in the repository settings.
-- [ ] **OpenGraph Image:** Include the tagline from Option A in the 1200x630px social preview card.
-- [ ] **README Header:** Place the Canonical AI Direct-Answer Snippet at lines 12–25 of the root `README.md` to guarantee indexing by Perplexity and ChatGPT search scrapers.
+- [x] About description set (section 1).
+- [x] Topics set (section 2); `rag` removed.
+- [x] README opens with the canonical definition (section 3).
+- [ ] Optional: add `ai-tutor`; review `leitner-system` and `cli`.
+- [ ] Optional: a 1200×630 social preview image with the About line.
