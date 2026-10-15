@@ -114,12 +114,22 @@ def parse_args(argv):
     return opts
 
 
+VIDEO_HOSTS = {
+    "youtube.com", "www.youtube.com", "m.youtube.com",
+    "youtu.be",
+    "vimeo.com", "www.vimeo.com", "player.vimeo.com",
+}
+
+
 def detect(path):
     if "://" in path:
         u = urllib.parse.urlsplit(path)
+        if u.scheme not in ("http", "https"):
+            raise StoreError(f"unsupported URL scheme: {u.scheme}")
         if u.path.lower().endswith(".pdf"):
             raise StoreError("remote PDF URLs are not supported (download the PDF first)")
-        if any(h in u.netloc.lower() for h in ("youtube.com", "youtu.be", "vimeo.com")):
+        host = (u.hostname or "").lower()
+        if host in VIDEO_HOSTS and not (u.username or u.password):
             return "video", 0
         return "web", 0
     if not os.path.exists(path):
@@ -203,7 +213,7 @@ def page_list(pages, limit=20):
 def missing_tools(stype="pdf", src=None):
     if stype == "pdf":
         return {t: hint for t, hint in REQUIRED.items() if not shutil.which(t)}
-    if stype in ("docx", "slides"):
+    if stype == "docx":
         if not shutil.which("pandoc") and not shutil.which("textutil"):
             return {"pandoc": "brew install pandoc"}
     if stype == "video":

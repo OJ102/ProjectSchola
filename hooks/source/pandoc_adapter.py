@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import urllib.parse
+import xml.etree.ElementTree as ET
 import zipfile
 from html.parser import HTMLParser
 
@@ -143,20 +144,20 @@ class ChapterParser(HTMLParser):
         self.flush()
 
 
-def zread(z, name, total):
+def zread(z, name, total, doc_type="EPUB"):
     try:
         info = z.getinfo(name)
     except KeyError:
-        raise SourceError(f"missing file in EPUB: {name}")
+        raise SourceError(f"missing file in {doc_type}: {name}")
     if info.file_size > MAX_ENTRY or (info.compress_size and info.file_size / max(info.compress_size, 1) > MAX_RATIO
                                       and info.file_size > 1024 * 1024):
-        raise SourceError(f"EPUB entry too large or too compressed (zip bomb?): {name}")
+        raise SourceError(f"{doc_type} entry too large or too compressed (zip bomb?): {name}")
     if total[0] + info.file_size > MAX_TOTAL:
-        raise SourceError("EPUB too large in total")
+        raise SourceError(f"{doc_type} too large in total")
     with z.open(info) as f:
         data = f.read(MAX_ENTRY + 1)
     if len(data) > MAX_ENTRY:
-        raise SourceError(f"EPUB entry larger than its header says: {name}")
+        raise SourceError(f"{doc_type} entry larger than its header says: {name}")
     total[0] += len(data)
     return data.decode("utf-8", "replace")
 
@@ -346,15 +347,174 @@ def convert_docx(path):
     raise SourceError("cannot convert DOCX (neither pandoc nor textutil succeeded)")
 
 
-def convert_slides(path):
-    cmd = ["pandoc", path, "-t", "markdown"]
+def parse_pptx_slides(path):
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if r.returncode == 0:
-            return r.stdout
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    raise SourceError("cannot convert presentation slides (pandoc failed or missing)")
+        z = zipfile.ZipFile(path)
+    except (zipfile.BadZipFile, OSError) as e:
+        raise SourceError(f"not a valid PPTX presentation (zip): {e}")
+
+    names = z.namelist()
+    slide_files = [n for n in names if re.match(r"^ppt/slides/slide\d+\.xml$", n)]
+    if not slide_files:
+        raise SourceError("no slides found in PPTX presentation")
+
+    slide_files.sort(key=lambda n: int(re.search(r"slide(\d+)\.xml", n).group(1)))
+
+    total = [0]
+    slides_data = []
+
+    for sfile in slide_files:
+        s_num = int(re.search(r"slide(\d+)\.xml", sfile).group(1))
+        content = zread(z, sfile, total, doc_type="PPTX")
+        try:
+            root = ET.fromstring(content)
+        except Exception:
+            continue
+
+        slide_title = None
+        paragraphs = []
+
+        for sp in root.iter():
+            if not sp.tag.endswith("}sp"):
+                continue
+
+            is_title = False
+            for ph in sp.iter():
+                if ph.tag.endswith("}ph"):
+                    phtype = ph.attrib.get("type", "")
+                    if phtype in ("title", "ctrTitle"):
+                        is_title = True
+                        break
+
+            shape_paras = []
+            for p in sp.iter():
+                if p.tag.endswith("}p"):
+                    txt = "".join(t.text or "" for t in p.iter() if t.tag.endswith("}t"))
+                    txt = re.sub(r"\s+", " ", txt).strip()
+                    if txt:
+                        shape_paras.append(txt)
+
+            if is_title and shape_paras and not slide_title:
+                slide_title = shape_paras[0]
+                paragraphs.extend(shape_paras[1:])
+            else:
+                paragraphs.extend(shape_paras)
+
+        if not slide_title and paragraphs:
+            if len(paragraphs[0]) <= 80:
+                slide_title = paragraphs.pop(0)
+        if not slide_title:
+            slide_title = f"Slide {s_num}"
+
+        notes_file = f"ppt/notesSlides/notesSlide{s_num}.xml"
+        notes_paras = []
+        if notes_file in names:
+            try:
+                ncontent = zread(z, notes_file, total, doc_type="PPTX")
+                nroot = ET.fromstring(ncontent)
+                for p in nroot.iter():
+                    if p.tag.endswith("}p"):
+                        txt = "".join(t.text or "" for t in p.iter() if t.tag.endswith("}t"))
+                        txt = re.sub(r"\s+", " ", txt).strip()
+                        if txt and txt != str(s_num):
+                            notes_paras.append(txt)
+            except Exception:
+                pass
+
+        slides_data.append((slide_title, paragraphs, notes_paras))
+
+    md_lines = []
+    for idx, (title, paras, notes) in enumerate(slides_data, 1):
+        md_lines.append(f"# Slide {idx}: {title}")
+        md_lines.append("")
+        for p in paras:
+            md_lines.append(p)
+            md_lines.append("")
+        if notes:
+            md_lines.append("Notes: " + " ".join(notes))
+            md_lines.append("")
+
+    return "\n".join(md_lines)
+
+
+def parse_odp_slides(path):
+    try:
+        z = zipfile.ZipFile(path)
+    except (zipfile.BadZipFile, OSError) as e:
+        raise SourceError(f"not a valid ODP presentation (zip): {e}")
+
+    names = z.namelist()
+    if "content.xml" not in names:
+        raise SourceError("invalid ODP presentation: content.xml not found")
+
+    total = [0]
+    content = zread(z, "content.xml", total, doc_type="ODP")
+    try:
+        root = ET.fromstring(content)
+    except Exception as e:
+        raise SourceError(f"cannot parse ODP content.xml: {e}")
+
+    slides_data = []
+    page_idx = 1
+    for elem in root.iter():
+        if not elem.tag.endswith("}page"):
+            continue
+        page_name = elem.attrib.get("{urn:oasis:names:tc:opendocument:xmlns:drawing:1.0}name") or f"Slide {page_idx}"
+        slide_title = None
+        paras = []
+        notes = []
+
+        for child in elem.iter():
+            if child.tag.endswith("}notes"):
+                for p in child.iter():
+                    if p.tag.endswith("}p") or p.tag.endswith("}h"):
+                        txt = re.sub(r"\s+", " ", "".join(p.itertext())).strip()
+                        if txt:
+                            notes.append(txt)
+            elif child.tag.endswith("}h"):
+                txt = re.sub(r"\s+", " ", "".join(child.itertext())).strip()
+                if txt and not slide_title:
+                    slide_title = txt
+                elif txt:
+                    paras.append(txt)
+            elif child.tag.endswith("}p"):
+                txt = re.sub(r"\s+", " ", "".join(child.itertext())).strip()
+                if txt:
+                    paras.append(txt)
+
+        if not slide_title:
+            slide_title = page_name
+        slides_data.append((slide_title, paras, notes))
+        page_idx += 1
+
+    if not slides_data:
+        raise SourceError("no slides found in ODP presentation")
+
+    md_lines = []
+    for idx, (title, paras, notes) in enumerate(slides_data, 1):
+        md_lines.append(f"# Slide {idx}: {title}")
+        md_lines.append("")
+        for p in paras:
+            md_lines.append(p)
+            md_lines.append("")
+        if notes:
+            md_lines.append("Notes: " + " ".join(notes))
+            md_lines.append("")
+
+    return "\n".join(md_lines)
+
+
+def convert_slides(path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".key":
+        raise SourceError("Keynote (.key) presentations are not supported directly; please export to PDF or PPTX first")
+    if ext == ".pptx":
+        return parse_pptx_slides(path)
+    if ext == ".odp":
+        return parse_odp_slides(path)
+    if ext == ".ppt":
+        raise SourceError("legacy binary .ppt presentations are not supported; please convert to .pptx or .pdf first")
+    raise SourceError(f"unsupported slide presentation format: {ext}")
 
 
 # ------------------------------------------------------------------ Adapter Build

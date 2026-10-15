@@ -1,8 +1,8 @@
 ---
 name: ingest
-description: Ingest a source (a PDF book or paper, born-digital or scanned) into the local source store so /teach can teach from it with verified citations. Use only when the user runs /ingest.
+description: Ingest a source (PDF, EPUB, Markdown, Jupyter Notebook, Word DOCX, slides, web page/crawl, or video transcript) into the local source store so /teach can teach from it with verified citations. Use only when the user runs /ingest.
 disable-model-invocation: true
-argument-hint: <path-to-pdf> [--slug name] [--ocr auto|applevision|tesseract|vision|none] [--vision auto|all|none] [--force] [--rebuild]
+argument-hint: <path-or-url> [--slug name] [--ocr auto|applevision|tesseract|vision|none] [--vision auto|all|none] [--crawl] [--max-pages N] [--yes] [--force] [--rebuild]
 allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}/hooks/source-ingest.sh" *)
 ---
 
@@ -22,10 +22,31 @@ Options the user may give (the script validates each one and refuses anything el
 - `--slug 'NAME'`: the store name (`a-z`, `0-9`, `-`, at most 60 characters). Default: the existing store for this file, else from the file name (`book`, then `book-2` for a different file with the same name).
 - `--ocr 'auto|applevision|tesseract|vision|none'`: how pages without a text layer are read. `auto` uses Apple Vision on macOS, else tesseract. `vision` leaves them for lazy Claude vision.
 - `--vision 'auto|all|none'`: which pages and figures are marked for lazy Claude vision. No vision call is made during ingest.
+- `--crawl`: for web documentation or article series, recursively follow internal links within the same URL prefix path.
+- `--max-pages 'N'`: maximum number of pages to crawl (default 50).
+- `--yes`: confirm crawling without interactive prompt.
 - `--force`: keep the result even when the page-label check fails.
 - `--rebuild`: ingest again even if the store is up to date.
 
-Only PDFs are supported so far. For a URL, EPUB, Word file or video, say that this source type is not supported yet; don't run anything.
+### Supported Sources
+
+- **PDF** (`.pdf`): Born-digital or scanned books and papers.
+- **EPUB** (`.epub`): Reflowable ebooks with chapter navigation.
+- **Markdown** (`.md`, `.markdown`) and **Jupyter Notebooks** (`.ipynb`): Documentation, notes, and tutorials.
+- **Word Documents** (`.docx`, `.doc`): Technical specifications, course materials, and reports.
+- **Presentation Slides** (`.pptx`, `.odp`): Slide decks with headings and speaker notes. (For Apple Keynote `.key` files, export to PDF or PPTX first).
+- **Web Pages & Crawls** (`http://`, `https://`, `.html`, `.htm`): Single web pages or prefix-scoped site crawls.
+- **Video & Audio** (`.vtt`, `.srt`, `.mp4`, `.mkv`, `.webm`, `.mov`, `.avi`, `.m4a`, YouTube or Vimeo URLs): Timestamped captions and transcriptions.
+
+### Web Crawl Consent Flow
+
+When crawling a web source (`--crawl`) without `--yes`:
+1. Run the command without `--yes`.
+2. The command discovers matching prefix pages, outputs the list of discovered URLs, and requests confirmation before proceeding.
+3. Present the list of discovered pages to the user and ask: `Proceed with crawling these X pages? [y/N]`
+4. If and only if the user confirms, re-run with `--yes`:
+   `bash "${CLAUDE_PLUGIN_ROOT}/hooks/source-ingest.sh" '<url>' --crawl --yes`
+   Never supply `--yes` autonomously without user confirmation.
 
 ## Report
 

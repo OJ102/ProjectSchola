@@ -451,6 +451,10 @@ o("safety: white text with white CSS rule background is hidden",
 # 7f. Step 6: Video URLs, media files, and slides detection & tool checking
 import ingest as singest
 o("step6: youtube url detected as video", singest.detect("https://www.youtube.com/watch?v=123")[0] == "video")
+o("step6: youtu.be url detected as video", singest.detect("https://youtu.be/123")[0] == "video")
+o("step6: vimeo url detected as video", singest.detect("https://vimeo.com/123")[0] == "video")
+o("step6: userinfo spoofed youtube url routes to web (not video)", singest.detect("http://youtube.com@127.0.0.1:8080/x")[0] == "web")
+o("step6: subdomain spoofed youtube url routes to web (not video)", singest.detect("http://notyoutube.com.evil.test/x")[0] == "web")
 import tempfile
 with tempfile.NamedTemporaryFile(suffix=".mp4") as tf:
     o("step6: video media file detected as video", singest.detect(tf.name)[0] == "video")
@@ -483,6 +487,46 @@ spans_docx = [json.loads(l) for l in open(os.path.join(store_docx, "spans.jsonl"
 o("docx: spans extracted (>= 2)", len(spans_docx) >= 2)
 rc_docx_up, out_docx_up, _ = run_ingest(docx_path, "docx-foundations")
 o("docx: re-ingest reports Up to date", rc_docx_up == 0 and "Up to date" in out_docx_up)
+
+# PPTX Slides Ingest Test
+pptx_path = os.path.join(FIX_DIR, "presentation.pptx")
+with zipfile.ZipFile(pptx_path, "w") as zf:
+    zf.writestr("ppt/slides/slide1.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree>
+    <p:sp>
+      <p:nvSpPr><p:cNvPr id="1" name="Title"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+      <p:txBody><a:p><a:r><a:t>Reinforcement Learning Overview</a:t></a:r></a:p></p:txBody>
+    </p:sp>
+    <p:sp>
+      <p:nvSpPr><p:cNvPr id="2" name="Body"/><p:cNvSpPr/><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr>
+      <p:txBody><a:p><a:r><a:t>Agents interact with environments via trial and error.</a:t></a:r></a:p></p:txBody>
+    </p:sp>
+  </p:spTree></p:cSld>
+</p:sld>""")
+    zf.writestr("ppt/notesSlides/notesSlide1.xml", """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree>
+    <p:sp><p:txBody><a:p><a:r><a:t>Emphasize agent-environment feedback loops.</a:t></a:r></a:p></p:txBody></p:sp>
+  </p:spTree></p:cSld>
+</p:notes>""")
+
+rc_pptx, out_pptx, err_pptx = run_ingest(pptx_path, "slides-rl")
+o("slides: pptx ingest exit 0", rc_pptx == 0, f"rc={rc_pptx} {err_pptx}")
+store_pptx = os.path.join(os.environ["SCHOLA_SOURCES_DIR"], "slides-rl")
+chk_pptx = contract.run(store_pptx)
+o("slides: pptx adapter contract passes", not chk_pptx.failed, "; ".join(l for l in chk_pptx.lines if l.startswith("FAIL")))
+spans_pptx = [json.loads(l) for l in open(os.path.join(store_pptx, "spans.jsonl"))]
+o("slides: pptx spans extracted with title and notes", any("Overview" in s["locator"] for s in spans_pptx) and any("feedback loops" in s["text"] for s in spans_pptx))
+rc_pptx_up, out_pptx_up, _ = run_ingest(pptx_path, "slides-rl")
+o("slides: pptx re-ingest reports Up to date", rc_pptx_up == 0 and "Up to date" in out_pptx_up)
+
+# Keynote clean rejection
+key_path = os.path.join(FIX_DIR, "presentation.key")
+with open(key_path, "wb") as f:
+    f.write(b"dummy keynote archive")
+rc_key, out_key, err_key = run_ingest(key_path, "slides-key")
+o("slides: keynote rejected with export hint", rc_key == 1 and "Keynote" in err_key and "PPTX" in err_key)
 
 # 7h. Step 6: Readability Main-Content Extraction
 import web as sweb
@@ -521,6 +565,28 @@ crawled_links = sweb.extract_links("""
 """, "https://example.com/docs/index")
 o("crawl: extract_links keeps internal prefix links", "https://example.com/docs/intro" in crawled_links and "https://example.com/docs/guide/start" in crawled_links)
 o("crawl: extract_links drops out-of-prefix and external links", not any("other" in l or "external" in l for l in crawled_links))
+
+# 7j. Step 6: Video Security Hardening & Crawl Headless Consent
+with open(os.path.join(HOOKS_DIR, "source", "video.py")) as f:
+    vcode = f.read()
+o("video: yt-dlp runs with --ignore-config", "--ignore-config" in vcode)
+o("video: ffmpeg runs with -nostdin", "-nostdin" in vcode)
+o("video: ffmpeg runs with -protocol_whitelist", "-protocol_whitelist" in vcode)
+o("video: check_timeout respects ingest deadline", "check_timeout" in vcode and "DeadlineExceeded" in vcode)
+
+# Crawl headless consent verification
+orig_fetch = sweb.sfetch.fetch
+orig_isatty = sys.stdin.isatty
+try:
+    sweb.sfetch.fetch = lambda u, **kw: (u, {}, b"<html><body><a href='/docs/p1'>P1</a></body></html>", None)
+    sys.stdin.isatty = lambda: False
+    sweb.crawl_docs("https://example.com/docs", opts={"yes": False}, log=lambda _: None)
+    o("crawl: headless requires explicit consent", False, "did not raise WebParseError")
+except sweb.WebParseError as e:
+    o("crawl: headless requires explicit consent", "--yes" in str(e))
+finally:
+    sweb.sfetch.fetch = orig_fetch
+    sys.stdin.isatty = orig_isatty
 
 if FAIL_COUNT > 0:
     sys.exit(1)
