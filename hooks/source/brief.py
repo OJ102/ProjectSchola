@@ -11,6 +11,8 @@ usage: brief.py units <slug>                       unit map with brief and progr
        brief.py review <slug> [--all]               list spaced review queue (due or upcoming)
        brief.py where <slug> "<query>" [--max N] [--json]
                                                     search segments for query; returns locator and verbatim quote
+       brief.py figure <slug> <span-id|asset-id>    copy a book figure into the vault's viz/ and print
+                                                    its markdown embed line (NONE: <reason> if there is none)
        brief.py list                                ingested sources
 
 The librarian is a confined `claude -p` run: an inline --agents definition
@@ -711,6 +713,90 @@ def cmd_where(slug, query, max_matches=5, max_words=25, as_json=False):
         print(f"{r['locator']}: “{r['quote']}” [[cite:{r['span_id']}]]")
 
 
+FIGURE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+SHOWABLE = ("png", "jpg", "jpeg")
+
+
+def find_figure(assets, ref):
+    """The asset a reference names: its id, its caption span, else the largest figure on the page
+    that span (or a pNNNN segment id) points at. Rasters beat page renders."""
+    hit = next((a for a in assets if a.get("id") == ref), None) or \
+        next((a for a in assets if a.get("caption_span") == ref), None)
+    if hit:
+        return hit
+    m = re.match(r"^p(\d{4,})(?:\.\d+)?$", ref)
+    if not m:
+        return None
+    page = [a for a in assets if a.get("pdf_index") == int(m.group(1))]
+    page.sort(key=lambda a: (a.get("kind") != "raster", -(a.get("width") or 0) * (a.get("height") or 0)))
+    return page[0] if page else None
+
+
+def to_png(src, dst):
+    """Convert an image Obsidian can't show (jp2 and the like) to PNG with sips or ImageMagick."""
+    for cmd in (["sips", "-s", "format", "png", src, "--out", dst], ["magick", src, dst]):
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.returncode == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 0:
+            return True
+    return False
+
+
+def cmd_figure(slug, ref):
+    """Copy one of the book's figures into <vault>/viz/ and print the embed line for the lesson."""
+    d = store_dir(slug)
+    if not FIGURE_ID.match(ref or ""):
+        sys.exit(f"bad figure reference {ref!r}: give a span id (p0007.3) or an asset id")
+    try:
+        with open(os.path.join(d, "assets", "index.json"), encoding="utf-8") as f:
+            assets = json.load(f)
+    except (OSError, ValueError):
+        assets = []
+    a = find_figure(assets if isinstance(assets, list) else [], ref)
+    if not a:
+        print(f"NONE: no figure for {ref} in {slug}; name the figure and its page instead")
+        return
+    adir = os.path.join(d, "assets")
+    name = str(a.get("file") or "")
+    if not FIGURE_ID.match(name) or not FIGURE_ID.match(str(a.get("id") or "")):
+        print(f"NONE: figure {a.get('id')!r} has an unsafe file name")
+        return
+    src = st.inside(adir, os.path.join(adir, name))
+    if not os.path.isfile(src):
+        print(f"NONE: figure file {name} is missing from the store")
+        return
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    viz = os.path.join(st.vault_root(), "viz")
+    os.makedirs(viz, exist_ok=True)
+    out_ext = ext if ext in SHOWABLE else "png"
+    out = os.path.join(viz, f"fig-{slug}-{a['id']}.{out_ext}")
+    if not os.path.isfile(out):
+        tmp = os.path.join(viz, f".tmp-{os.getpid()}-{os.path.basename(out)}")
+        try:
+            if out_ext == ext:
+                with open(src, "rb") as fi, open(tmp, "wb") as fo:
+                    fo.write(fi.read())
+            elif not to_png(src, tmp):
+                print(f"NONE: could not convert {name} to PNG (needs sips or ImageMagick)")
+                return
+            os.replace(tmp, out)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+    loc = sv.locator_text(d, {"locator": a.get("locator"), "segment": f"p{int(a.get('pdf_index') or 0):04d}"}) \
+        if a.get("locator") is not None else f"PDF p. {a.get('pdf_index')}"
+    cap = a.get("caption_span")
+    print(f"![{loc}|500](../viz/{os.path.basename(out)})")
+    print(f"image: {out}")
+    print(f"locator: {loc}")
+    if str(a.get("kind") or "").startswith("page_render"):
+        print("kind: whole-page render; Read the image and embed it only if the page shows the figure")
+    if cap:
+        print(f"caption span: {cap} (cite it as [[cite:{cap}]])")
+
+
 def cmd_factcheck(slug, uid, strict, spot_check, model):
     d = store_dir(slug)
     u = next((x for x in load(d, "units.json") if x["id"] == uid), None)
@@ -902,6 +988,8 @@ def run(a):
         max_m = int(opt("--max") or 5)
         max_w = int(opt("--words") or 25)
         return cmd_where(a[1], a[2], max_matches=max_m, max_words=max_w, as_json=("--json" in a))
+    if a[:1] == ["figure"] and len(a) == 3:
+        return cmd_figure(a[1], a[2])
     if a[:1] == ["fastpath"] and len(a) >= 3:
         return cmd_fastpath(a[1], a[2])
     if a[:1] == ["brief"] and len(a) >= 3:

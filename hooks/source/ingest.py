@@ -426,9 +426,9 @@ def ingest_locked(st, src, stype, size, opts):
             raise SourceChanged("the source changed during ingest; nothing was written. Run /ingest again")
         info = pdf_meta(snap)
         xmp = rep.pop("xmp", {}) or {}
-        title = clean_meta(info.get("Title")) or xmp.get("title") or \
-            clean_meta(os.path.splitext(os.path.basename(src))[0])
-        author = clean_meta(info.get("Author")) or xmp.get("author", "")
+        title = clean_meta(info.get("Title"), 120) or xmp.get("title") or \
+            clean_meta(os.path.splitext(os.path.basename(src))[0], 120)
+        author = clean_meta(info.get("Author"), 120) or xmp.get("author", "")
         published = clean_meta(info.get("CreationDate"), 60)
         adapter_name = "pdf"
     elif stype == "web":

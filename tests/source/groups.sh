@@ -82,7 +82,7 @@ EOF4
       done
     fi
     if [ -d "$SCHOLA_SOURCES_DIR/longbook" ]; then
-      tally "contract[longbook]: " < <(python3 -I - "$SCHOLA_SOURCES_DIR/longbook" <<'PY'
+      cat > "$WORK/longbook_check.py" <<'PY'
 import json, sys
 d = sys.argv[1]
 def o(n, g, x=''): print(("ok " if g else "FAIL ") + n + ("" if g else f" :: {x}"))
@@ -105,7 +105,7 @@ hy = sorted({w for s in S if s['kind'] != 'code' for w in __import__('re').finda
 o("line-break hyphens joined (no 'wa-ter' splits of fixture words)", not hy, hy[:10])
 o("footers 'N | CHAPTER' not in span text", not any('| CHAPTER' in s['text'].upper() and len(s['text']) < 60 for s in S), '')
 PY
-)
+      tally "contract[longbook]: " < <(python3 -I "$WORK/longbook_check.py" "$SCHOLA_SOURCES_DIR/longbook")
     fi
   fi
 fi
@@ -435,6 +435,32 @@ if want source-teach; then
     printf '\n## Further reading\n- tampered [[cite:%s "words that the book never says at all"]]\n' "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))[0]["span_start"])' "$S/units.json")" >> "$S/briefs/$U.md"
     bash "$BR" brief bk "$U" | grep -q "(citation removed)" && ok "teach: a cite edited in the cache renders as removed" || bad "teach: a cite edited in the cache renders as removed" "$(bash "$BR" brief bk "$U" | tail -2)"
     [ -f "$S/briefs/$U.verify.json" ] && ok "teach: verify.json created alongside brief" || bad "teach: verify.json created alongside brief" "missing"
+    # figure: copies a book figure into the vault's viz/ and prints a markdown embed (no [[ ]], so the cite check keeps it)
+    cp "$S/assets/index.json" "$D/assets-index.bak" 2>/dev/null
+    python3 -I - "$S" <<'PY'
+import json, os, struct, sys, zlib
+s = sys.argv[1]
+def chunk(t, b): return struct.pack(">I", len(b)) + t + b + struct.pack(">I", zlib.crc32(t + b) & 0xffffffff)
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(b"\0\0")) + chunk(b"IEND", b"")
+os.makedirs(f"{s}/assets", exist_ok=True)
+open(f"{s}/assets/imgt.png", "wb").write(png)
+json.dump([{"id": "imgt", "file": "imgt.png", "kind": "raster", "pdf_index": 4, "locator": "1", "pages": [4], "format": "png", "caption_span": "p0004.2"},
+           {"id": "evil", "file": "../../evil.png", "kind": "raster", "pdf_index": 5, "locator": "2", "pages": [5], "format": "png", "caption_span": "p0005.9"}],
+          open(f"{s}/assets/index.json", "w"))
+PY
+    o=$(bash "$BR" figure bk p0004.2 2>&1); rc=$?
+    [ $rc = 0 ] && [ -f "$D/vault/viz/fig-bk-imgt.png" ] && grep -qx '!\[p\. 1|500\](\.\./viz/fig-bk-imgt\.png)' <<<"$o" && grep -q 'cite:p0004.2' <<<"$o" \
+      && ok "teach: figure copies the asset into viz/ and prints its embed" || bad "teach: figure copies the asset into viz/ and prints its embed" "rc=$rc $o"
+    o=$(bash "$BR" figure bk imgt 2>&1); grep -q 'fig-bk-imgt.png' <<<"$o" && ok "teach: figure finds an asset by id" || bad "teach: figure finds an asset by id" "$o"
+    o=$(bash "$BR" figure bk p0005.9 2>&1); rc=$?
+    [ $rc = 0 ] && [[ "$o" == NONE:* ]] && [ ! -e "$D/evil.png" ] && ! ls "$D/vault/viz" | grep -q evil \
+      && ok "teach: figure refuses an asset file outside assets/" || bad "teach: figure refuses an asset file outside assets/" "rc=$rc $o"
+    o=$(bash "$BR" figure bk nosuch 2>&1); [[ "$o" == NONE:* ]] && ok "teach: figure prints NONE when there is no figure" || bad "teach: figure prints NONE when there is no figure" "$o"
+    bash "$BR" figure bk ../x >/dev/null 2>&1 && bad "teach: figure refuses a path as reference" "exit 0" || ok "teach: figure refuses a path as reference"
+    o=$(printf 'x\n\n![p. 1|500](../viz/fig-bk-imgt.png)\n' | python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import cite_check as c; print(c.check_reply(sys.stdin.read(), {}, [], set(), sys.argv[2])[0])' "$HOOKS/source" "$S" 2>&1)
+    grep -qx '!\[p\. 1|500\](\.\./viz/fig-bk-imgt\.png)' <<<"$o" && ok "teach: cite check keeps a markdown image embed" || bad "teach: cite check keeps a markdown image embed" "$o"
+    if [ -f "$D/assets-index.bak" ]; then cp "$D/assets-index.bak" "$S/assets/index.json"; fi
+    rm -f "$S/assets/imgt.png"
     tally "teach b2: " < <(python3 -I "$TSRC/check_b2.py" "$HOOKS" "$D/b2_run" 2>&1)
     tally "teach b3: " < <(python3 -I "$TSRC/check_b3.py" "$HOOKS" "$D/b3_run" 2>&1)
     tally "teach b4: " < <(python3 -I "$TSRC/check_b4.py" "$HOOKS" "$D/b4_run" 2>&1)
