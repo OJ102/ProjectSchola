@@ -25,9 +25,35 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import store as st  # noqa: E402
 import verify as sv  # noqa: E402
-from srcnorm import display_safe, neutralize  # noqa: E402
+from srcnorm import display_safe, neutralize, BRACKETS  # noqa: E402
 
-TUTOR_CITE = re.compile(r'\[\[cite:([^\s\]"]+)(?:\s+"(.*?)")?\s*\]\]', re.S)
+TUTOR_CITE = re.compile(r'\[\[cite:([^\s\]"]+)(?:\s+"(.*?)")?\s*\]\]', re.S | re.I)
+WIKILINK_PROTECT = re.compile(r"!?\[\[(?!\s*cite\s*[:：])[^\[\]［］\r\n]+\]\]", re.I)
+
+
+def escape_table_pipes(s):
+    """In markdown table rows starting with '|', escape unescaped pipes in wikilinks/embeds."""
+    def fix_line(line):
+        if not line.strip().startswith("|"):
+            return line
+        return re.sub(r'(!?\[\[[^\[\]\r\n]+?)(?<!\\)\|([^\[\]\r\n]+?\]\])', r'\1\|\2', line)
+    return '\n'.join(fix_line(l) for l in s.split('\n'))
+
+
+def neutralize_note(s):
+    """Neutralize citation tokens while preserving Obsidian wikilinks, embeds, and diagram brackets."""
+    s = "".join(BRACKETS.get(c, c) for c in s)
+    tokens = []
+
+    def mask(m):
+        tokens.append(m.group(0))
+        return f"\x00WIKILINK_{len(tokens)-1}\x00"
+
+    masked = WIKILINK_PROTECT.sub(mask, s)
+    neutralized = neutralize(masked)
+    for i, tok in enumerate(tokens):
+        neutralized = neutralized.replace(f"\x00WIKILINK_{i}\x00", tok)
+    return neutralized
 BUDGET = 10_000
 
 
@@ -108,6 +134,7 @@ def check_reply(text, spans, order, allowed, store):
     Quote found nowhere in allowed removes citation with explanation.
     Decision 31: no live [[cite: or ]] sequences survive.
     """
+    text = escape_table_pipes(text)
     issues = []
 
     # floor: where the quotes a cite covers start, normally the end of the previous cite. A removed
@@ -155,8 +182,9 @@ def check_reply(text, spans, order, allowed, store):
 
     rendered = TUTOR_CITE.sub(sub, text)
     rendered = display_safe(rendered)
-    # Decision 31: systematically neutralize all [[ and ]] forms (including fullwidth)
-    rendered = neutralize(rendered)
+    # Decision 31: systematically neutralize all [[ and ]] forms (including fullwidth),
+    # while preserving Obsidian wikilinks and embeds (![[...]] and [[...]])
+    rendered = neutralize_note(rendered)
     return rendered, issues
 
 
@@ -537,9 +565,9 @@ def strip_tokens(log_file, marker):
     with open(log_file, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
     frontmatter, body = split_frontmatter(content)
-    if not LIVE_TOKEN.search(neutralize(body).replace("[ [", "[[")):
+    if not LIVE_TOKEN.search(neutralize_note(body).replace("[ [", "[[")):
         return False
-    body = neutralize(TUTOR_CITE.sub(marker, body))
+    body = neutralize_note(TUTOR_CITE.sub(marker, body))
     st.atomic_write(log_file, (frontmatter + body).encode("utf-8"), mode=0o644)
     return True
 

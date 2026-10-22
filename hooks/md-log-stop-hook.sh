@@ -67,17 +67,20 @@ fi
 # Quote every line of a multi-line string so it stays inside an Obsidian callout.
 JQ_PROGRAM='
 def quoted: gsub("\n"; "\n> ");
+def table_spaced: gsub("(?<=[^\n|])\n(?=[ \t]*\\|)"; "\n\n") | gsub("(?<=\\|)\n(?=[ \t]*[^ \t\n|])"; "\n\n");
 def is_question_result: (.toolUseResult | type) == "object" and ((.toolUseResult.questions | type) == "array");
 def entry:
   if .type == "assistant" then
-    .message.content[]? | select(.type == "text") | .text
+    .message.content[]? | select(.type == "text") | .text | table_spaced
   elif .type == "user" then
     if is_question_result then
       .toolUseResult as $r
       | $r.questions[]
-      | "> [!question] " + (.question | quoted) + "\n"
-        + ([.options[]? | "> - " + (.label | quoted)] | join("\n"))
-        + "\n\n**Your answer:** " + (($r.answers // {})[.question] // "_no answer_")
+      | (.options // []) as $opts
+      | (if ($opts | type) == "array" and ($opts | length) > 0 then "\n" + ([ $opts[] | "> - " + (.label | quoted) ] | join("\n")) else "" end) as $opts_rendered
+      | "> [!question] " + (.question | quoted)
+        + $opts_rendered
+        + "\n>\n> **Your answer:** " + (((($r.answers // {})[.question] // "_no answer_") | tostring) | quoted)
     elif (.message.content | type) == "string" and (.isMeta != true) then
       .message.content as $c
       | if ($c | test("<command-name>")) then
@@ -90,7 +93,7 @@ def entry:
     else empty end
   else empty end;
 select((.isSidechain // false) | not)
-| try (entry | . + "\n") catch empty
+| try (entry | . + "\n\n") catch empty
 '
 
 # Source mode: check the tutor's citations in the rendered note before it is moved into place, still
@@ -101,7 +104,7 @@ CITE_CHECK="$(cd "$(dirname "$0")" && pwd)/source/cite_check.py"
 cite_check_note() {
   [ -f "$CITE_CHECK" ] || return 0
   MD_LOG_LOCK_HELD="$LOCK_ME" MD_LOG_FILE="$1" python3 -I "$CITE_CHECK" --hook <<<"$INPUT" && return 0
-  LC_ALL=C sed -E 's/\[\[cite:[^]]*\]\]/(citation removed: cite check failed)/g; s/\[\[/[ [/g; s/\]\]/] ]/g' "$1" > "$1.s" \
+  LC_ALL=C sed -E 's/(\[\[|［［)[[:space:]]*[cC][iI][tT][eE]:[^]］]*(\]\]|］］)/(citation removed: cite check failed)/g; s/(\[\[|［［)[[:space:]]*[cC][iI][tT][eE]:/[ [cite:/g' "$1" > "$1.s" \
     && mv -f "$1.s" "$1"
 }
 
@@ -118,7 +121,18 @@ rm -f "${LOCK%.lock}".md.tmp.* "${LOCK%.lock}".md.tmp.*.s "$SESSIONS_DIR"/*.md.t
   echo ""
   echo "# ${SAFE_TOPIC:-Teaching session}"
   echo ""
-  jq -r "$JQ_PROGRAM" "$TRANSCRIPT_PATH" 2>/dev/null
+  jq -r "$JQ_PROGRAM" "$TRANSCRIPT_PATH" 2>/dev/null | awk '{
+    is_fence = ($0 ~ /^[[:space:]]*(```|~~~)/);
+    was_in_code = in_code;
+    if (is_fence) in_code = !in_code;
+    if (!in_code && !was_in_code && !is_fence) {
+      if ($0 ~ /^>[[:space:]]*\|/ && prev !~ /^>[[:space:]]*\|/ && prev !~ /^>[[:space:]]*$/ && NR > 1) print ">";
+      if (prev ~ /^>[[:space:]]*\|/ && $0 !~ /^>[[:space:]]*\|/ && $0 !~ /^>[[:space:]]*$/ && $0 ~ /^>/) print ">";
+      if ($0 ~ /^[[:space:]]*\|/ && prev !~ /^[[:space:]]*\|/ && prev !~ /^[[:space:]]*$/ && NR > 1) print "";
+      if (prev ~ /^[[:space:]]*\|/ && $0 !~ /^[[:space:]]*\|/ && $0 !~ /^[[:space:]]*$/) print "";
+    }
+    print; prev = $0;
+  }'
 } > "$TMP" && cite_check_note "$TMP" && mv -f "$TMP" "$LOG_FILE"
 
 if [ -n "$EXISTING" ] && [ "$EXISTING" != "$LOG_FILE" ]; then

@@ -15,7 +15,7 @@ You have `Write` (author `.mmd` source files), `Bash` (run `mmdc` to render), an
 
 ## The one rule that matters most: verify by looking
 
-You are not done when the diagram renders. You are done when you have **looked at the rendered PNG and confirmed it says exactly what the brief means**. `render_mermaid` returns the image inline — actually look at it. Rendering success only proves the syntax parsed; it says nothing about whether the picture is true or readable.
+You are not done when the diagram renders. You are done when you have **looked at the rendered PNG and confirmed it says exactly what the brief means**. Read the rendered PNG with `Read` — actually look at it. Rendering success only proves the syntax parsed; it says nothing about whether the picture is true or readable.
 
 ## Workflow (the render-and-inspect loop)
 
@@ -28,7 +28,7 @@ You are not done when the diagram renders. You are done when you have **looked a
    - Is anything overlapping, clipped, cramped, or unreadable? If so the fix is usually **fewer elements**, not more.
    - Would the learner instantly read the intended idea from this picture alone?
 5. **Iterate** with `Write` to edit the source and `Bash` to re-render. A few passes is normal. If `mmdc` returns an error, read it, fix the source, re-render.
-6. **Publish** once it is correct and clean: `Bash` command `mmdc -i diagram.mmd -o ${OBSIDIAN_VAULT_PATH:-~/Obsidian/learn}/viz/viz-<topic>-$(date +%s).png`. Confirm the published image one last time with `Read`.
+6. **Publish** once it is correct and clean: `Bash` command `mkdir -p "${OBSIDIAN_VAULT_PATH:-$HOME/Obsidian/learn}/viz" && mmdc -i diagram.mmd -o "${OBSIDIAN_VAULT_PATH:-$HOME/Obsidian/learn}/viz/viz-<topic>-$(date +%s).png"`. Confirm the published image one last time with `Read`.
 
 ## Your output
 
@@ -36,8 +36,8 @@ End your response with EXACTLY this block (nothing after it):
 
 ```
 RESULT:
-filename: <the viz-...-<timestamp>.png filename returned by render_mermaid>
-path: <the absolute path returned by render_mermaid>
+filename: <the viz-<topic>-<timestamp>.png filename you published>
+path: <the absolute path you published to>
 ```
 
 If you genuinely cannot make a correct, sensible diagram of the brief, return:

@@ -19,7 +19,7 @@ Unlike auto-laid-out diagrams, you place every element at coordinates you choose
 
 ## The one rule that matters most: verify by looking
 
-You are done only when you have **looked at the rendered PNG and confirmed it is true to the brief**. `render_svg` returns the image inline — actually look at it. Rendering success only proves the SVG parsed; it says nothing about whether the geometry is right or the picture is readable.
+You are done only when you have **looked at the rendered PNG and confirmed it is true to the brief**. Read the rendered PNG with `Read` — actually look at it. Rendering success only proves the SVG parsed; it says nothing about whether the geometry is right or the picture is readable.
 
 ## Workflow (the render-and-inspect loop)
 
@@ -32,7 +32,7 @@ You are done only when you have **looked at the rendered PNG and confirmed it is
    - Is anything clipped by the viewBox, too small to read, or cramped?
    - Would the learner instantly read the intended idea from this picture alone?
 5. **Iterate** with `Write` to edit the source and `Bash` to re-render until correct and clean. If `rsvg-convert` fails, read the error, fix the source, re-render.
-6. **Publish** once it is correct and clean: `Bash` command `rsvg-convert -z 2 diagram.svg -o ${OBSIDIAN_VAULT_PATH:-~/Obsidian/learn}/viz/viz-<topic>-$(date +%s).png`. Confirm the published image one last time with `Read`.
+6. **Publish** once it is correct and clean: `Bash` command `mkdir -p "${OBSIDIAN_VAULT_PATH:-$HOME/Obsidian/learn}/viz" && rsvg-convert -z 2 diagram.svg -o "${OBSIDIAN_VAULT_PATH:-$HOME/Obsidian/learn}/viz/viz-<topic>-$(date +%s).png"`. Confirm the published image one last time with `Read`.
 
 ## Your output
 
@@ -40,8 +40,8 @@ End your response with EXACTLY this block (nothing after it):
 
 ```
 RESULT:
-filename: <the viz-...-<timestamp>.png filename returned by render_svg>
-path: <the absolute path returned by render_svg>
+filename: <the viz-<topic>-<timestamp>.png filename you published>
+path: <the absolute path you published to>
 ```
 
 If you genuinely cannot make a correct, sensible picture of the brief, return:

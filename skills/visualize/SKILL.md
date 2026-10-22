@@ -43,32 +43,35 @@ Keep the idea intact but trust the maker to compose; if your brief lists more th
 Dispatch the maker with the `Agent` tool:
 
 ```
-Agent(subagent_type: plan, name: "mermaid-maker", prompt: "Create a diagram: <your minimal, concrete brief>")
+Agent(subagent_type: "learn-voice-teacher:mermaid-maker", description: "Make diagram", prompt: "Create a diagram: <your minimal, concrete brief>")
 ```
 or
 ```
-Agent(subagent_type: plan, name: "svg-maker", prompt: "Draw an SVG: <your minimal, concrete brief>")
+Agent(subagent_type: "learn-voice-teacher:svg-maker", description: "Make figure", prompt: "Draw an SVG: <your minimal, concrete brief>")
 ```
 
-The maker owns tools — it authors the source, renders it to a PNG, **looks at the PNG and iterates until it is correct and clean**, publishes it into `viz/` with a unique filename, and returns:
+The maker owns tools — it authors the source, renders it to a PNG, **looks at the PNG and iterates until it is correct and clean**, publishes it into `$OBSIDIAN_VAULT_PATH/viz/` (default `~/Obsidian/learn/viz/`) with a unique filename, and returns:
 
 ```
 RESULT:
 filename: viz-<slug>-<timestamp>.png
-path: <cwd>/viz/viz-<slug>-<timestamp>.png
+path: <vault>/viz/viz-<slug>-<timestamp>.png
 ```
 
 If it returns `RESULT: NONE`, it couldn't make a correct picture of the brief — simplify or rethink, or decide the visual isn't worth it. Never hand-author or fake a diagram yourself; correctness depends on the maker's render-and-inspect loop.
 
 ## Embed it in the lesson
 
-Put the embed directly in your teaching reply, using Obsidian's wikilink embed with the returned **filename** (not the full path) and a display width:
+Put the embed directly in your teaching **reply text** (never only in thinking — the learner can't see thinking, and a visual that only appears in thinking will not be rendered). Always place the embed into your visible reply text BEFORE calling `AskUserQuestion`.
+
+Use Obsidian's native wikilink embed syntax with the returned **filename** and a display width, followed by one line giving the absolute path since the terminal can't show images:
 
 ```
-![[viz-<slug>-<timestamp>.png|500]]
+![[<filename>|500]]
+Image: <path returned by the maker>
 ```
 
-That's all. The md-log hook mirrors your reply text verbatim into the linked `.md`, and Obsidian resolves the embed by filename anywhere in the vault (the maker saves into the project's `viz` folder, which is inside the vault) — so it renders inline in the lesson automatically. Width `|500` is a good default; use larger for dense diagrams. Introduce the visual in a sentence, then let it carry the idea — don't narrate every element back in prose.
+Obsidian natively indexes and renders images from across the entire vault using `![[<filename>|500]]` without path fragility or relative path breakage, and `cite_check` safely preserves wikilinks and embeds while neutralizing citation tokens. Width `|500` is a good default; use larger for dense diagrams. If an embed is placed inside a markdown table cell, escape the width pipe as `\|` (e.g. `![[<filename>\|500]]`) so the table column structure is preserved. Introduce the visual in a sentence, then let it carry the idea — don't narrate every element back in prose.
 
 ## Why this is reliable
 
