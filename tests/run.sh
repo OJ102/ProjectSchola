@@ -156,6 +156,32 @@ J
 fi
 
 # ============================================================================
+echo "== quiz-nudge (grade visibly after AskUserQuestion) =="
+if want quiz-nudge; then
+  fresh; G="$HOOKS/quiz-grade-nudge.sh"; TR="$T/g.jsonl"
+  TEACH='{"type":"user","message":{"role":"user","content":"<command-name>/learn-voice-teacher:teach</command-name><command-args>tides</command-args>"}}'
+  SKILL='{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"learn-voice-teacher:teach"}}]}}'
+  nudge() { printf '%s\n' "$@" > "$TR"; jq -nc --arg tr "$TR" '{transcript_path:$tr, tool_name:"AskUserQuestion"}' | bash "$G" 2>/dev/null; }
+  o=$(nudge "$TEACH"); jq -e '.hookSpecificOutput.hookEventName == "PostToolUse" and (.hookSpecificOutput.additionalContext | test("visible"))' <<<"$o" >/dev/null 2>&1 \
+    && ok "nudge: teach session gets the grade-visibly reminder" || bad "nudge: teach session gets the grade-visibly reminder" "$o"
+  o=$(nudge "$SKILL"); [ -n "$o" ] && ok "nudge: teach skill invoked by the model counts" || bad "nudge: teach skill invoked by the model counts" "empty"
+  o=$(nudge '{"type":"user","message":{"role":"user","content":"hi"}}'); [ -z "$o" ] && ok "nudge: no output outside teach sessions" || bad "nudge: no output outside teach sessions" "$o"
+  SAY='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Here is the table."}]}}'
+  THINK='{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"I laid out a table."}]}}'
+  ASK='{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"question":"Which model writes stories?"}]}}]}}'
+  ANS='{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"a"}]},"toolUseResult":{"questions":[{"question":"q"}],"answers":{"q":"a"}}}'
+  o=$(nudge "$TEACH" "$SAY" "$ASK" "$ANS" "$THINK" "$ASK"); grep -q 'NO visible text' <<<"$o" && grep -q 'Which model writes stories' <<<"$o" \
+    && ok "nudge: a question asked with only thinking before it triggers the repair" || bad "nudge: a question asked with only thinking before it triggers the repair" "$o"
+  o=$(nudge "$TEACH" "$SAY" "$ASK" "$ANS" "$SAY" "$ASK"); [ -n "$o" ] && ! grep -q 'NO visible text' <<<"$o" \
+    && ok "nudge: no repair when text came before the question" || bad "nudge: no repair when text came before the question" "$o"
+  o=$(nudge "$TEACH" "$SAY" "$ASK" "$ANS" "$THINK" "$ASK" "$ANS"); grep -q 'NO visible text' <<<"$o" \
+    && ok "nudge: repair holds when the answer is already in the transcript" || bad "nudge: repair holds when the answer is already in the transcript" "$o"
+  o=$(jq -nc '{transcript_path:"/nonexistent"}' | bash "$G" 2>/dev/null); rc=$?
+  [ $rc = 0 ] && [ -z "$o" ] && ok "nudge: fails open on a missing transcript" || bad "nudge: fails open on a missing transcript" "rc=$rc $o"
+  grep -q 'quiz-grade-nudge' <(jq -c '.hooks.PreToolUse' "$HOOKS/hooks.json") && bad "nudge: never registered as a blocking PreToolUse hook" || ok "nudge: never registered as a blocking PreToolUse hook"
+fi
+
+# ============================================================================
 echo "== cleaner =="
 if want clean; then
   c_has   "clean: plain text kept"          "The derivative measures change."          "The derivative measures change."

@@ -18,6 +18,13 @@
             "args": [
               "${CLAUDE_PLUGIN_ROOT}/hooks/speak-answered.sh"
             ]
+          },
+          {
+            "type": "command",
+            "command": "bash",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/quiz-grade-nudge.sh"
+            ]
           }
         ]
       }
