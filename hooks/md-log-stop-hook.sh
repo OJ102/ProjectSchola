@@ -50,6 +50,9 @@ TOPIC=$(jq -r '
   | select(test("<command-name>[^<]*teach</command-name>"))
   | (capture("<command-args>(?<a>[\\s\\S]*?)</command-args>").a // empty)
 ' "$TRANSCRIPT_PATH" 2>/dev/null | grep -v '^[[:space:]]*$' | head -1)
+# `/teach --continue <slug>` passes its flags through <command-args>; strip leading
+# option tokens so the note is named after the topic, not the flag (#2).
+TOPIC=$(printf '%s' "$TOPIC" | sed -E 's/^(--?[A-Za-z][A-Za-z0-9-]*([[:space:]]+|$))+//')
 SAFE_TOPIC=$(printf '%s' "$TOPIC" | tr -d '/\\:*?"<>|#^[]' | tr -s ' ' | sed 's/^ //; s/ $//' | cut -c1-60)
 
 DATE=$(jq -r 'select(.timestamp) | .timestamp' "$TRANSCRIPT_PATH" 2>/dev/null | head -1 | cut -c1-10)
